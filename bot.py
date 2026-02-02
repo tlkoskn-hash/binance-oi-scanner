@@ -185,7 +185,7 @@ async def scanner_job(context: ContextTypes.DEFAULT_TYPE):
 
             print("[DEBUG] initial snapshot done")
             return
-
+        print("[DEBUG] scanner cycle started")
         if not cfg["enabled"] or not cfg["chat_id"]:
             return
 
@@ -272,3 +272,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
