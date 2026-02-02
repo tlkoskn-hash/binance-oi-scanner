@@ -7,6 +7,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
 # ================== НАСТРОЙКИ ==================
+
 TOKEN = os.getenv("BOT_TOKEN")
 ALLOWED_USERS = {1128293345}  # твой Telegram ID
 
@@ -15,8 +16,8 @@ CONFIG_FILE = "scanner_config.json"
 
 cfg = {
     "period_min": 15,          # период в минутах
-    "oi_percent": 5,        # % роста OI
-    "oi_usd": 100000,      # рост OI в $
+    "oi_percent": 5,           # % роста OI
+    "oi_usd": 100000,          # рост OI в $
     "max_signals_per_day": 5,
     "enabled": False,
     "chat_id": None
@@ -26,8 +27,8 @@ oi_snapshot = {}
 price_snapshot = {}
 signals_today = {}
 
-# защита от параллельного запуска job
 scanner_running = False
+SYMBOLS_CACHE = []   # <<< КЕШ СИМВОЛОВ
 
 # ================== UTILS ==================
 
@@ -132,7 +133,7 @@ async def status(update: Update, context):
 # ================== SCANNER JOB ==================
 
 async def scanner_job(context: ContextTypes.DEFAULT_TYPE):
-    global scanner_running
+    global scanner_running, SYMBOLS_CACHE
 
     if scanner_running:
         return
@@ -141,16 +142,24 @@ async def scanner_job(context: ContextTypes.DEFAULT_TYPE):
     app = context.application
 
     try:
-        # первый запуск — только снимок
+        # ---------- ПЕРВЫЙ ЗАПУСК ----------
         if not oi_snapshot:
-            symbols = get_symbols()
-            for s in symbols:
+            if not SYMBOLS_CACHE:
+                SYMBOLS_CACHE = get_symbols()
+                print(f"[DEBUG] cached {len(SYMBOLS_CACHE)} symbols")
+
+            if not SYMBOLS_CACHE:
+                print("[WARN] symbols cache empty, retry later")
+                return
+
+            for s in SYMBOLS_CACHE:
                 try:
                     oi_snapshot[s] = get_oi(s)
                     price_snapshot[s] = get_price(s)
                     await asyncio.sleep(0.1)
                 except:
                     pass
+
             print("[DEBUG] initial snapshot done")
             return
 
@@ -170,9 +179,8 @@ async def scanner_job(context: ContextTypes.DEFAULT_TYPE):
                 oi_delta = oi_now - oi_prev
                 oi_pct = (oi_delta / oi_prev) * 100
                 price_pct = (price_now - price_prev) / price_prev * 100
+
                 circle = "🟢" if price_pct >= 0 else "🔴"
-               
-                print(f"[DEBUG] {s} | OI {oi_pct:.4f}% | USD {oi_delta * price_now:,.0f}")
 
                 key = (s, today)
                 cnt = signals_today.get(key, 0)
@@ -194,6 +202,7 @@ async def scanner_job(context: ContextTypes.DEFAULT_TYPE):
                         f"💰 <b>Изменение цены:</b> {price_pct:.2f}%\n"
                         f"🔔 <b>Сигнал за сутки:</b> {signals_today[key]}"
                     )
+
                     await app.bot.send_message(
                         chat_id=cfg["chat_id"],
                         text=message,
@@ -206,7 +215,7 @@ async def scanner_job(context: ContextTypes.DEFAULT_TYPE):
                 await asyncio.sleep(0.02)
 
             except Exception as e:
-                print("err", s, e)
+                print("[ERROR]", s, e)
 
     finally:
         scanner_running = False
@@ -239,5 +248,4 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
-
     main()
