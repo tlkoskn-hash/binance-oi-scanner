@@ -2,6 +2,7 @@ import asyncio
 import json
 import requests
 import os
+import time
 from datetime import date
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
@@ -28,7 +29,11 @@ price_snapshot = {}
 signals_today = {}
 
 scanner_running = False
-SYMBOLS_CACHE = []   # <<< КЕШ СИМВОЛОВ
+
+# ===== кеш символов + обновление раз в сутки =====
+SYMBOLS_CACHE = []
+LAST_SYMBOLS_UPDATE = 0
+SYMBOLS_UPDATE_INTERVAL = 24 * 60 * 60  # 24 часа
 
 # ================== UTILS ==================
 
@@ -55,6 +60,25 @@ def get_symbols():
     except Exception as e:
         print("[ERROR] get_symbols:", e)
         return []
+
+def refresh_symbols_if_needed(force=False):
+    global SYMBOLS_CACHE, LAST_SYMBOLS_UPDATE
+
+    now = time.time()
+
+    if not force and (now - LAST_SYMBOLS_UPDATE < SYMBOLS_UPDATE_INTERVAL):
+        return
+
+    print("[DEBUG] trying to refresh symbols list")
+
+    symbols = get_symbols()
+
+    if symbols:
+        SYMBOLS_CACHE = symbols
+        LAST_SYMBOLS_UPDATE = now
+        print(f"[DEBUG] symbols refreshed: {len(SYMBOLS_CACHE)}")
+    else:
+        print("[WARN] symbols refresh failed, keeping old list")
 
 def get_oi(symbol):
     r = requests.get(
@@ -133,7 +157,7 @@ async def status(update: Update, context):
 # ================== SCANNER JOB ==================
 
 async def scanner_job(context: ContextTypes.DEFAULT_TYPE):
-    global scanner_running, SYMBOLS_CACHE
+    global scanner_running
 
     if scanner_running:
         return
@@ -142,12 +166,11 @@ async def scanner_job(context: ContextTypes.DEFAULT_TYPE):
     app = context.application
 
     try:
+        # обновление списка символов (раз в сутки)
+        refresh_symbols_if_needed()
+
         # ---------- ПЕРВЫЙ ЗАПУСК ----------
         if not oi_snapshot:
-            if not SYMBOLS_CACHE:
-                SYMBOLS_CACHE = get_symbols()
-                print(f"[DEBUG] cached {len(SYMBOLS_CACHE)} symbols")
-
             if not SYMBOLS_CACHE:
                 print("[WARN] symbols cache empty, retry later")
                 return
