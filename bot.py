@@ -39,11 +39,21 @@ def save_cfg():
         json.dump(cfg, f, indent=2)
 
 def get_symbols():
-    r = requests.get(f"{BINANCE}/fapi/v1/exchangeInfo", timeout=10).json()
-    return [
-        s["symbol"] for s in r["symbols"]
-        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
-    ]
+    try:
+        r = requests.get(f"{BINANCE}/fapi/v1/exchangeInfo", timeout=10).json()
+
+        if "symbols" not in r:
+            print("[WARN] exchangeInfo error:", r)
+            return []
+
+        return [
+            s["symbol"] for s in r["symbols"]
+            if s.get("quoteAsset") == "USDT" and s.get("status") == "TRADING"
+        ]
+
+    except Exception as e:
+        print("[ERROR] get_symbols:", e)
+        return []
 
 def get_oi(symbol):
     r = requests.get(
@@ -229,4 +239,5 @@ def main():
     app.run_polling()
 
 if __name__ == "__main__":
+
     main()
