@@ -16,7 +16,7 @@ BINANCE = "https://fapi.binance.com"
 CONFIG_FILE = "scanner_config.json"
 
 cfg = {
-    "period_min": 15,          # период в минутах
+    "period_min": 10,          # период в минутах
     "oi_percent": 5,           # % роста OI
     "oi_usd": 100000,          # рост OI в $
     "max_signals_per_day": 5,
@@ -272,4 +272,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
