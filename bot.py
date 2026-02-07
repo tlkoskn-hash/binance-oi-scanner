@@ -44,8 +44,6 @@ oi_history = {}
 # (symbol, date) -> count
 oi_signals_today = defaultdict(int)
 
-scanner_running = False
-
 SYMBOLS_CACHE = []
 LAST_SYMBOL_UPDATE = None
 
@@ -169,52 +167,37 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard(),
     )
 
-# ================== SCANNER LOOP ==================
+# ================== SCANNER (ONE PASS) ==================
 
-async def scanner_loop():
-    global scanner_running
-    if scanner_running:
+async def scanner(context: ContextTypes.DEFAULT_TYPE):
+    if not cfg["enabled"] or not cfg["chat_id"]:
         return
 
-    scanner_running = True
-    print(">>> OI scanner loop started <<<")
+    cycle_start = datetime.now(UTC_PLUS_3)
 
-    try:
-        while True:
-            cycle_start = datetime.now(UTC_PLUS_3)
+    symbols = get_symbols()
+    now = datetime.now(UTC_PLUS_3)
+    window = timedelta(minutes=cfg["oi_period"])
 
-            if not cfg["enabled"] or not cfg["chat_id"]:
-                await asyncio.sleep(1)
-                continue
+    for symbol in symbols:
+        oi = await asyncio.to_thread(get_open_interest, symbol)
 
-            symbols = get_symbols()
-            now = datetime.now(UTC_PLUS_3)
-            window = timedelta(minutes=cfg["oi_period"])
+        history = oi_history.setdefault(symbol, [])
+        history.append((now, oi))
+        history[:] = [(t, v) for t, v in history if now - t <= window]
 
-            for symbol in symbols:
-                oi = await asyncio.to_thread(get_open_interest, symbol)
+        if len(history) >= 2:
+            old_oi = history[0][1]
+            pct = (oi - old_oi) / old_oi * 100
 
-                history = oi_history.setdefault(symbol, [])
-                history.append((now, oi))
-                history[:] = [(t, v) for t, v in history if now - t <= window]
+            if pct >= cfg["oi_percent"]:
+                await send_signal(symbol, pct, cfg["oi_period"])
+                history.clear()
 
-                if len(history) >= 2:
-                    old_oi = history[0][1]
-                    pct = (oi - old_oi) / old_oi * 100
+        await asyncio.sleep(0.03)
 
-                    if pct >= cfg["oi_percent"]:
-                        await send_signal(symbol, pct, cfg["oi_period"])
-                        history.clear()
-
-                await asyncio.sleep(0.03)
-
-            cycle_time = (datetime.now(UTC_PLUS_3) - cycle_start).total_seconds()
-            print(f"[OI] Цикл занял: {cycle_time:.2f} сек")
-
-            await asyncio.sleep(10)
-
-    finally:
-        scanner_running = False
+    cycle_time = (datetime.now(UTC_PLUS_3) - cycle_start).total_seconds()
+    print(f"[OI] Цикл занял: {cycle_time:.2f} сек")
 
 # ================== SIGNAL ==================
 
@@ -242,15 +225,19 @@ async def send_signal(symbol: str, pct: float, period: int):
 
 # ================== MAIN ==================
 
-async def on_startup(app):
-    asyncio.create_task(scanner_loop())
-
-app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
+app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
+# ⬅️ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
+app.job_queue.run_repeating(
+    scanner,
+    interval=10,   # пауза между циклами
+    first=5,
+    name="oi_scanner",
+)
+
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
-
