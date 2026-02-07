@@ -28,7 +28,6 @@ ALLOWED_USERS = set(
 )
 
 BINANCE = "https://fapi.binance.com"
-
 UTC_PLUS_3 = timezone(timedelta(hours=3))
 
 cfg = {
@@ -167,7 +166,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard(),
     )
 
-# ================== SCANNER (ONE PASS) ==================
+# ================== SCANNER (ONE PASS, как PUMP) ==================
 
 async def scanner(context: ContextTypes.DEFAULT_TYPE):
     if not cfg["enabled"] or not cfg["chat_id"]:
@@ -183,6 +182,7 @@ async def scanner(context: ContextTypes.DEFAULT_TYPE):
         history = oi_history.setdefault(symbol, [])
         history.append((now, oi))
 
+        # чистим историю по окну
         history[:] = [(t, v) for t, v in history if now - t <= window]
 
         if len(history) < 2:
@@ -193,16 +193,18 @@ async def scanner(context: ContextTypes.DEFAULT_TYPE):
 
         if pct >= cfg["oi_percent"]:
             await send_signal(symbol, pct, cfg["oi_period"])
-            history.clear()
+            history.clear()  # антиспам
 
         await asyncio.sleep(0.03)
 
 # ================== SIGNAL ==================
 
 async def send_signal(symbol: str, pct: float, period: int):
+    coinglass_link = f"https://www.coinglass.com/tv/Binance_{symbol}"
+
     msg = (
         "📈 <b>OPEN INTEREST РАСТЕТ</b>\n\n"
-        f"🪙 <b>{symbol}</b>\n"
+        f"🪙 <b><a href='{coinglass_link}'>{symbol}</a></b>\n"
         f"📊 Рост OI: <b>{pct:.2f}%</b>\n"
         f"⏱ Период: {period} мин"
     )
@@ -211,6 +213,7 @@ async def send_signal(symbol: str, pct: float, period: int):
         chat_id=cfg["chat_id"],
         text=msg,
         parse_mode="HTML",
+        disable_web_page_preview=True,
     )
 
 # ================== MAIN ==================
@@ -221,9 +224,10 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
+# как часто опрашиваем Binance
 app.job_queue.run_repeating(
     scanner,
-    interval=10,   # как часто опрашиваем Binance
+    interval=10,   # каждые 10 секунд
     first=10,
 )
 
