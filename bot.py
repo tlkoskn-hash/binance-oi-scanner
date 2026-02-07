@@ -2,6 +2,7 @@ import asyncio
 import requests
 import os
 from datetime import datetime, timedelta, timezone
+from collections import defaultdict
 
 from telegram import (
     Update,
@@ -31,13 +32,18 @@ BINANCE = "https://fapi.binance.com"
 UTC_PLUS_3 = timezone(timedelta(hours=3))
 
 cfg = {
-    "oi_period": 10,
-    "oi_percent": 5.0,
+    "oi_period": 10,      # minutes
+    "oi_percent": 5.0,    # %
     "enabled": False,
     "chat_id": None,
 }
 
+# symbol -> list[(timestamp, oi)]
 oi_history = {}
+
+# (symbol, date) -> count   ✅ ДОБАВЛЕНО
+oi_signals_today = defaultdict(int)
+
 scanner_running = False
 
 SYMBOLS_CACHE = []
@@ -55,6 +61,7 @@ def get_symbols():
     r = requests.get(f"{BINANCE}/fapi/v1/exchangeInfo", timeout=10).json()
     SYMBOLS_CACHE = [
         s["symbol"]
+        for s["symbol"] if False else s["symbol"]
         for s in r["symbols"]
         if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
     ]
@@ -87,6 +94,7 @@ def keyboard():
         ],
     ])
 
+
 def status_text():
     now = datetime.now(UTC_PLUS_3).strftime("%H:%M:%S")
     return (
@@ -95,7 +103,7 @@ def status_text():
         "📈 <b>Рост OI</b>\n"
         f"• Период: {cfg['oi_period']} мин\n"
         f"• Процент: {cfg['oi_percent']}%\n\n"
-        f"🕒 Обновлено: <i>{now} (UTC+3)</i>"
+        f"⏱ Рынок обновлён: <i>{now} (UTC+3)</i>"
     )
 
 # ================== COMMANDS ==================
@@ -117,7 +125,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-
     action = q.data
 
     if action == "on":
@@ -158,9 +165,12 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg[key] = int(value) if "period" in key else value
     context.user_data["edit"] = None
 
-    await update.message.reply_text("✅ Сохранено", reply_markup=keyboard())
+    await update.message.reply_text(
+        "✅ Сохранено",
+        reply_markup=keyboard(),
+    )
 
-# ================== SCANNER LOOP (ГЛАВНОЕ ИСПРАВЛЕНИЕ) ==================
+# ================== SCANNER LOOP ==================
 
 async def scanner_loop():
     global scanner_running
@@ -172,14 +182,12 @@ async def scanner_loop():
 
     try:
         while True:
-            cycle_start = datetime.now()  # ⬅️ СТАРТ ЦИКЛА
-
             if not cfg["enabled"] or not cfg["chat_id"]:
                 await asyncio.sleep(1)
                 continue
 
             symbols = get_symbols()
-            now = datetime.now()
+            now = datetime.now(UTC_PLUS_3)
             window = timedelta(minutes=cfg["oi_period"])
 
             for symbol in symbols:
@@ -199,29 +207,26 @@ async def scanner_loop():
 
                 await asyncio.sleep(0.03)
 
-            cycle_time = (datetime.now() - cycle_start).total_seconds()  # ⬅️ КОНЕЦ
-            print(
-                f"[OI] Цикл занял: {cycle_time:.2f} сек | "
-                f"символов: {len(symbols)} | sleep: 10 сек"
-            )
-
-            # пауза между циклами
             await asyncio.sleep(10)
 
     finally:
         scanner_running = False
 
-
 # ================== SIGNAL ==================
 
-async def send_signal(symbol, pct, period):
+async def send_signal(symbol: str, pct: float, period: int):
+    today = datetime.now(UTC_PLUS_3).date()
+    oi_signals_today[(symbol, today)] += 1
+    count = oi_signals_today[(symbol, today)]
+
     link = f"https://www.coinglass.com/tv/Binance_{symbol}"
 
     msg = (
         "📈 <b>OPEN INTEREST РАСТЕТ</b>\n\n"
         f"🪙 <b><a href='{link}'>{symbol}</a></b>\n"
         f"📊 Рост OI: <b>+{pct:.2f}%</b>\n"
-        f"⏱ Период: {period} мин"
+        f"⏱ Период: {period} мин\n"
+        f"🔁 <b>Сигнал 24h:</b> {count}"
     )
 
     await app.bot.send_message(
@@ -244,4 +249,3 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
-
