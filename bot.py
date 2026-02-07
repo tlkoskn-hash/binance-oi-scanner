@@ -19,7 +19,7 @@ from telegram.ext import (
 
 # ================== CONFIG ==================
 
-TOKEN = os.getenv("8234883658:AAEmjnP-bEskeGMhs7CvSXow2iAxZPZWhm0")
+TOKEN = os.getenv("8234883658:AAERg5ge7SqRdPfXaBn8tIjwnORuNPoM8D0")
 ALLOWED_USERS = {1128293345}
 
 BINANCE = "https://fapi.binance.com"
@@ -245,4 +245,5 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
