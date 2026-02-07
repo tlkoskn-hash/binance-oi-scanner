@@ -249,7 +249,6 @@ async def send_signal(symbol: str, pct: float, period: int):
     link = f"https://www.coinglass.com/tv/Binance_{symbol}"
 
     msg = (
-        "📈 <b>OPEN INTEREST РАСТЕТ</b>\n\n"
         f"🪙 <b><a href='{link}'>{symbol}</a></b>\n"
         f"📊 Рост OI: <b>+{pct:.2f}%</b>\n"
         f"⏱ Период: {period} мин\n"
@@ -276,3 +275,4 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
