@@ -75,13 +75,21 @@ def get_symbols():
     return SYMBOLS_CACHE
 
 
-def get_open_interest(symbol: str) -> float:
-    r = requests.get(
-        f"{BINANCE}/fapi/v1/openInterest",
-        params={"symbol": symbol},
-        timeout=5,
-    ).json()
-    return float(r["openInterest"])
+def get_open_interest(symbol: str) -> float | None:
+    try:
+        r = requests.get(
+            f"{BINANCE}/fapi/v1/openInterest",
+            params={"symbol": symbol},
+            timeout=5,
+        ).json()
+
+        if "openInterest" not in r:
+            return None
+
+        return float(r["openInterest"])
+
+    except Exception as e:
+        return None
 
 # ================== UI ==================
 
@@ -261,3 +269,4 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
