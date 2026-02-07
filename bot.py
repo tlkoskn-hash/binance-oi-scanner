@@ -20,6 +20,8 @@ from telegram.ext import (
 
 # ================== CONFIG ==================
 
+print("### THIS IS WHILE TRUE VERSION ###")
+
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
     raise RuntimeError("BOT_TOKEN not set")
@@ -43,6 +45,8 @@ oi_history = {}
 
 # (symbol, date) -> count
 oi_signals_today = defaultdict(int)
+
+scanner_running = False
 
 SYMBOLS_CACHE = []
 LAST_SYMBOL_UPDATE = None
@@ -100,7 +104,7 @@ def status_text():
         "📈 <b>Рост OI</b>\n"
         f"• Период: {cfg['oi_period']} мин\n"
         f"• Процент: {cfg['oi_percent']}%\n\n"
-        f"⏱ Рынок обновлён: <i>{now} (UTC+3)</i>"
+        f"⏱ Обновлено: <i>{now} (UTC+3)</i>"
     )
 
 # ================== COMMANDS ==================
@@ -167,37 +171,53 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard(),
     )
 
-# ================== SCANNER (ONE PASS) ==================
+# ================== SCANNER LOOP ==================
 
-async def scanner(context: ContextTypes.DEFAULT_TYPE):
-    if not cfg["enabled"] or not cfg["chat_id"]:
+async def scanner_loop():
+    global scanner_running
+
+    if scanner_running:
         return
 
-    cycle_start = datetime.now(UTC_PLUS_3)
+    scanner_running = True
+    print(">>> OI scanner loop started <<<")
 
-    symbols = get_symbols()
-    now = datetime.now(UTC_PLUS_3)
-    window = timedelta(minutes=cfg["oi_period"])
+    try:
+        while True:
+            cycle_start = datetime.now(UTC_PLUS_3)
 
-    for symbol in symbols:
-        oi = await asyncio.to_thread(get_open_interest, symbol)
+            if not cfg["enabled"] or not cfg["chat_id"]:
+                await asyncio.sleep(1)
+                continue
 
-        history = oi_history.setdefault(symbol, [])
-        history.append((now, oi))
-        history[:] = [(t, v) for t, v in history if now - t <= window]
+            symbols = get_symbols()
+            now = datetime.now(UTC_PLUS_3)
+            window = timedelta(minutes=cfg["oi_period"])
 
-        if len(history) >= 2:
-            old_oi = history[0][1]
-            pct = (oi - old_oi) / old_oi * 100
+            for symbol in symbols:
+                oi = await asyncio.to_thread(get_open_interest, symbol)
 
-            if pct >= cfg["oi_percent"]:
-                await send_signal(symbol, pct, cfg["oi_period"])
-                history.clear()
+                history = oi_history.setdefault(symbol, [])
+                history.append((now, oi))
+                history[:] = [(t, v) for t, v in history if now - t <= window]
 
-        await asyncio.sleep(0.03)
+                if len(history) >= 2:
+                    old_oi = history[0][1]
+                    pct = (oi - old_oi) / old_oi * 100
 
-    cycle_time = (datetime.now(UTC_PLUS_3) - cycle_start).total_seconds()
-    print(f"[OI] Цикл занял: {cycle_time:.2f} сек")
+                    if pct >= cfg["oi_percent"]:
+                        await send_signal(symbol, pct, cfg["oi_period"])
+                        history.clear()
+
+                await asyncio.sleep(0.03)
+
+            cycle_time = (datetime.now(UTC_PLUS_3) - cycle_start).total_seconds()
+            print(f"[OI] Цикл занял: {cycle_time:.2f} сек")
+
+            await asyncio.sleep(10)
+
+    finally:
+        scanner_running = False
 
 # ================== SIGNAL ==================
 
@@ -225,19 +245,14 @@ async def send_signal(symbol: str, pct: float, period: int):
 
 # ================== MAIN ==================
 
-app = ApplicationBuilder().token(TOKEN).build()
+async def on_startup(app):
+    asyncio.create_task(scanner_loop())
+
+app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
-
-# ⬅️ КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
-app.job_queue.run_repeating(
-    scanner,
-    interval=10,   # пауза между циклами
-    first=5,
-    name="oi_scanner",
-)
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
