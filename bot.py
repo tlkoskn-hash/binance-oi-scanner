@@ -181,6 +181,8 @@ async def scanner_loop():
 
     try:
         while True:
+            cycle_start = datetime.now(UTC_PLUS_3)
+
             if not cfg["enabled"] or not cfg["chat_id"]:
                 await asyncio.sleep(1)
                 continue
@@ -205,6 +207,9 @@ async def scanner_loop():
                         history.clear()
 
                 await asyncio.sleep(0.03)
+
+            cycle_time = (datetime.now(UTC_PLUS_3) - cycle_start).total_seconds()
+            print(f"[OI] Цикл занял: {cycle_time:.2f} сек")
 
             await asyncio.sleep(10)
 
@@ -248,3 +253,4 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
