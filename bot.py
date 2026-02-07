@@ -41,7 +41,7 @@ cfg = {
 # symbol -> list[(timestamp, oi)]
 oi_history = {}
 
-# (symbol, date) -> count   ✅ ДОБАВЛЕНО
+# (symbol, date) -> count
 oi_signals_today = defaultdict(int)
 
 scanner_running = False
@@ -61,7 +61,6 @@ def get_symbols():
     r = requests.get(f"{BINANCE}/fapi/v1/exchangeInfo", timeout=10).json()
     SYMBOLS_CACHE = [
         s["symbol"]
-        for s["symbol"] if False else s["symbol"]
         for s in r["symbols"]
         if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
     ]
