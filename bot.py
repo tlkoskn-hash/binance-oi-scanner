@@ -20,7 +20,10 @@ from telegram.ext import (
 # ================== CONFIG ==================
 
 TOKEN = os.getenv("BOT_TOKEN")
-ALLOWED_USERS = {1128293345}
+ALLOWED_USERS = set(
+    int(x) for x in os.getenv("ALLOWED_USERS", "").split(",") if x.strip()
+)
+
 
 BINANCE = "https://fapi.binance.com"
 
@@ -245,6 +248,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
