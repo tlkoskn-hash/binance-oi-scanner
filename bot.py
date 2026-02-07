@@ -1,47 +1,66 @@
 import asyncio
 import requests
 import os
-from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from datetime import datetime, timedelta, timezone
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    ContextTypes,
     CallbackQueryHandler,
     MessageHandler,
+    ContextTypes,
     filters,
 )
 
-# ================== НАСТРОЙКИ ==================
+# ================== CONFIG ==================
 
 TOKEN = os.getenv("8234883658:AAEmjnP-bEskeGMhs7CvSXow2iAxZPZWhm0")
 ALLOWED_USERS = {1128293345}
 
 BINANCE = "https://fapi.binance.com"
 
+UTC_PLUS_3 = timezone(timedelta(hours=3))
+
 cfg = {
-    "oi_period": 10,     # минут
-    "oi_percent": 5.0,   # %
+    "oi_period": 10,      # minutes
+    "oi_percent": 5.0,    # %
     "enabled": False,
     "chat_id": None,
 }
 
-OI_POLL_INTERVAL = 15  # секунд (частота опроса Binance)
+# symbol -> list[(timestamp, oi)]
+oi_history = {}
 
-oi_history = {}        # symbol -> [(timestamp, oi)]
 scanner_running = False
+
+SYMBOLS_CACHE = []
+LAST_SYMBOL_UPDATE = None
 
 # ================== BINANCE ==================
 
 def get_symbols():
+    global SYMBOLS_CACHE, LAST_SYMBOL_UPDATE
+
+    if SYMBOLS_CACHE and LAST_SYMBOL_UPDATE:
+        if datetime.now() - LAST_SYMBOL_UPDATE < timedelta(hours=1):
+            return SYMBOLS_CACHE
+
     r = requests.get(f"{BINANCE}/fapi/v1/exchangeInfo", timeout=10).json()
-    return [
+    SYMBOLS_CACHE = [
         s["symbol"]
         for s in r["symbols"]
         if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
     ]
+    LAST_SYMBOL_UPDATE = datetime.now()
+    return SYMBOLS_CACHE
 
-def get_open_interest(symbol):
+
+def get_open_interest(symbol: str) -> float:
     r = requests.get(
         f"{BINANCE}/fapi/v1/openInterest",
         params={"symbol": symbol},
@@ -66,16 +85,16 @@ def keyboard():
         ],
     ])
 
+
 def status_text():
-    now = (datetime.utcnow() + timedelta(hours=3)).strftime("%H:%M:%S")
+    now = datetime.now(UTC_PLUS_3).strftime("%H:%M:%S")
     return (
-        "🤖 <b>OI Screener Binance</b>\n\n"
-        "Мониторинг роста <b>Open Interest</b>\n\n"
-        "<b>Текущие настройки:</b>\n"
+        "📊 <b>Binance Open Interest Screener</b>\n\n"
         f"▶️ Включен: <b>{cfg['enabled']}</b>\n\n"
-        f"📊 OI период: {cfg['oi_period']} мин\n"
-        f"📈 OI рост: {cfg['oi_percent']}%\n\n"
-        f"⏱ <i>Обновлено: {now} (UTC+3)</i>"
+        "📈 <b>Рост OI</b>\n"
+        f"• Период: {cfg['oi_period']} мин\n"
+        f"• Процент: {cfg['oi_percent']}%\n\n"
+        f"🕒 Рынок обновлен: <i>{now} (UTC+3)</i>"
     )
 
 # ================== COMMANDS ==================
@@ -83,18 +102,21 @@ def status_text():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ALLOWED_USERS:
         return
+
     cfg["chat_id"] = update.effective_chat.id
+
     await update.message.reply_text(
         status_text(),
         parse_mode="HTML",
         reply_markup=keyboard(),
     )
 
-# ================== CALLBACKS ==================
+# ================== BUTTONS ==================
 
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+
     action = q.data
 
     if action == "on":
@@ -109,19 +131,18 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.user_data["edit"] = action
         await q.message.reply_text(
-            f"Введи значение для: <b>{action}</b>",
+            f"Введи значение для <b>{action}</b>",
             parse_mode="HTML",
         )
         return
 
-    try:
+    text = status_text()
+    if q.message.text != text:
         await q.message.edit_text(
-            status_text(),
+            text,
             parse_mode="HTML",
             reply_markup=keyboard(),
         )
-    except:
-        pass
 
 # ================== TEXT INPUT ==================
 
@@ -136,7 +157,11 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Введи число")
         return
 
-    cfg[key] = int(value) if "period" in key else value
+    if "period" in key:
+        cfg[key] = int(value)
+    else:
+        cfg[key] = value
+
     context.user_data["edit"] = None
 
     await update.message.reply_text(
@@ -146,81 +171,77 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================== SCANNER ==================
 
-async def scanner():
+async def scanner_loop():
     global scanner_running
 
-    if scanner_running or not cfg["enabled"] or not cfg["chat_id"]:
+    if scanner_running:
         return
 
     scanner_running = True
 
     try:
-        symbols = get_symbols()
-        window = timedelta(minutes=cfg["oi_period"])
-
-        for symbol in symbols:
-            if not cfg["enabled"]:
-                break
-
-            oi = get_open_interest(symbol)
-            now = datetime.utcnow()
-
-            history = oi_history.setdefault(symbol, [])
-            history.append((now, oi))
-
-            # чистим старые данные
-            cutoff = now - window
-            history[:] = [(t, v) for t, v in history if t >= cutoff]
-
-            if len(history) < 2:
+        while True:
+            if not cfg["enabled"] or not cfg["chat_id"]:
+                await asyncio.sleep(1)
                 continue
 
-            old_time, old_oi = history[0]
-            pct = (oi - old_oi) / old_oi * 100
+            symbols = get_symbols()
+            now = datetime.now()
 
-            if pct >= cfg["oi_percent"]:
-                await send_signal(symbol, pct)
-                history.clear()  # защита от спама
+            window = timedelta(minutes=cfg["oi_period"])
 
-            await asyncio.sleep(0.05)
+            for symbol in symbols:
+                oi = get_open_interest(symbol)
+
+                history = oi_history.setdefault(symbol, [])
+                history.append((now, oi))
+
+                # clean old data
+                history[:] = [(t, v) for t, v in history if now - t <= window]
+
+                if len(history) < 2:
+                    continue
+
+                old_time, old_oi = history[0]
+                pct = (oi - old_oi) / old_oi * 100
+
+                if pct >= cfg["oi_percent"]:
+                    await send_signal(symbol, pct, cfg["oi_period"])
+                    history.clear()
+
+                await asyncio.sleep(0.05)
+
+            await asyncio.sleep(10)  # минимальный опрос Binance
 
     finally:
         scanner_running = False
 
 # ================== SIGNAL ==================
 
-async def send_signal(symbol, pct):
-    if not cfg["enabled"]:
-        return
-
-    link = f"https://www.coinglass.com/tv/Binance_{symbol}"
-
+async def send_signal(symbol: str, pct: float, period: int):
     msg = (
-        f"🟣 <b>OI СИГНАЛ</b>\n"
-        f"🪙 <b><a href='{link}'>{symbol}</a></b>\n"
-        f"📈 Рост OI: {pct:.2f}%\n"
-        f"⏱ За {cfg['oi_period']} мин"
+        "📈 <b>OPEN INTEREST РАСТЕТ</b>\n\n"
+        f"🪙 <b>{symbol}</b>\n"
+        f"📊 Рост OI: <b>{pct:.2f}%</b>\n"
+        f"⏱ Период: {period} мин"
     )
 
     await app.bot.send_message(
         chat_id=cfg["chat_id"],
         text=msg,
         parse_mode="HTML",
-        disable_web_page_preview=True,
     )
 
 # ================== MAIN ==================
 
-async def loop_job(context):
-    await scanner()
+async def on_startup(app):
+    asyncio.create_task(scanner_loop())
 
-app = ApplicationBuilder().token(TOKEN).build()
+app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(button))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
-app.job_queue.run_repeating(loop_job, interval=OI_POLL_INTERVAL, first=10)
-
-print(">>> OI SCREENER RUNNING <<<")
+print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
