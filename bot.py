@@ -88,7 +88,7 @@ def get_open_interest(symbol: str) -> float | None:
 
         return float(r["openInterest"])
 
-    except Exception as e:
+    except Exception:
         return None
 
 # ================== UI ==================
@@ -210,12 +210,19 @@ async def scanner_loop():
             for symbol in symbols:
                 oi = await asyncio.to_thread(get_open_interest, symbol)
 
+                if oi is None:
+                    continue  # <<< КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
+
                 history = oi_history.setdefault(symbol, [])
                 history.append((now, oi))
                 history[:] = [(t, v) for t, v in history if now - t <= window]
 
                 if len(history) >= 2:
                     old_oi = history[0][1]
+
+                    if old_oi is None or old_oi == 0:
+                        continue
+
                     pct = (oi - old_oi) / old_oi * 100
 
                     if pct >= cfg["oi_percent"]:
@@ -269,4 +276,3 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
-
