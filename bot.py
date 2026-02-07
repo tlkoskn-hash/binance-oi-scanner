@@ -60,13 +60,18 @@ def get_symbols():
         if datetime.now() - LAST_SYMBOL_UPDATE < timedelta(hours=1):
             return SYMBOLS_CACHE
 
-    r = requests.get(f"{BINANCE}/fapi/v1/exchangeInfo", timeout=10).json()
-    SYMBOLS_CACHE = [
-        s["symbol"]
-        for s in r["symbols"]
-        if s["quoteAsset"] == "USDT" and s["status"] == "TRADING"
+    r = requests.get(f"{BINANCE}/fapi/v1/ticker/24hr", timeout=10).json()
+
+    symbols = [
+        s for s in r
+        if s["symbol"].endswith("USDT")
     ]
+
+    symbols.sort(key=lambda x: float(x["quoteVolume"]), reverse=True)
+
+    SYMBOLS_CACHE = [s["symbol"] for s in symbols[:100]]
     LAST_SYMBOL_UPDATE = datetime.now()
+
     return SYMBOLS_CACHE
 
 
