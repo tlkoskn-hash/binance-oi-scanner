@@ -227,9 +227,10 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 # как часто опрашиваем Binance
 app.job_queue.run_repeating(
     scanner,
-    interval=10,   # каждые 10 секунд
+    interval=60,   # каждые 60 секунд
     first=10,
 )
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
