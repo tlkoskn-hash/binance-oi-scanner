@@ -40,7 +40,7 @@ cfg = {
     "chat_id": None,
 }
 
-# symbol -> list[(timestamp, oi)]
+# symbol -> list[(timestamp, oi, price)]
 oi_history = {}
 
 # (symbol, date) -> count
@@ -62,11 +62,7 @@ def get_symbols():
 
     r = requests.get(f"{BINANCE}/fapi/v1/ticker/24hr", timeout=10).json()
 
-    symbols = [
-        s for s in r
-        if s["symbol"].endswith("USDT")
-    ]
-
+    symbols = [s for s in r if s["symbol"].endswith("USDT")]
     symbols.sort(key=lambda x: float(x["quoteVolume"]), reverse=True)
 
     SYMBOLS_CACHE = [s["symbol"] for s in symbols[:100]]
@@ -75,19 +71,26 @@ def get_symbols():
     return SYMBOLS_CACHE
 
 
-def get_open_interest(symbol: str) -> float | None:
+def get_open_interest(symbol: str):
     try:
         r = requests.get(
             f"{BINANCE}/fapi/v1/openInterest",
             params={"symbol": symbol},
             timeout=5,
         ).json()
-
-        if "openInterest" not in r:
-            return None
-
         return float(r["openInterest"])
+    except Exception:
+        return None
 
+
+def get_price(symbol: str):
+    try:
+        r = requests.get(
+            f"{BINANCE}/fapi/v1/ticker/price",
+            params={"symbol": symbol},
+            timeout=5,
+        ).json()
+        return float(r["price"])
     except Exception:
         return None
 
@@ -155,13 +158,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    text = status_text()
-    if q.message.text != text:
-        await q.message.edit_text(
-            text,
-            parse_mode="HTML",
-            reply_markup=keyboard(),
-        )
+    await q.message.edit_text(
+        status_text(),
+        parse_mode="HTML",
+        reply_markup=keyboard(),
+    )
 
 # ================== TEXT INPUT ==================
 
@@ -179,10 +180,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cfg[key] = int(value) if "period" in key else value
     context.user_data["edit"] = None
 
-    await update.message.reply_text(
-        "✅ Сохранено",
-        reply_markup=keyboard(),
-    )
+    await update.message.reply_text("✅ Сохранено", reply_markup=keyboard())
 
 # ================== SCANNER LOOP ==================
 
@@ -209,24 +207,27 @@ async def scanner_loop():
 
             for symbol in symbols:
                 oi = await asyncio.to_thread(get_open_interest, symbol)
+                price = await asyncio.to_thread(get_price, symbol)
 
-                if oi is None:
-                    continue  # <<< КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ
+                if oi is None or price is None:
+                    continue
 
                 history = oi_history.setdefault(symbol, [])
-                history.append((now, oi))
-                history[:] = [(t, v) for t, v in history if now - t <= window]
+                history.append((now, oi, price))
+                history[:] = [(t, o, p) for t, o, p in history if now - t <= window]
 
                 if len(history) >= 2:
                     old_oi = history[0][1]
+                    old_price = history[0][2]
 
-                    if old_oi is None or old_oi == 0:
+                    if old_oi == 0 or old_price == 0:
                         continue
 
-                    pct = (oi - old_oi) / old_oi * 100
+                    oi_pct = (oi - old_oi) / old_oi * 100
+                    price_pct = (price - old_price) / old_price * 100
 
-                    if pct >= cfg["oi_percent"]:
-                        await send_signal(symbol, pct, cfg["oi_period"])
+                    if oi_pct >= cfg["oi_percent"]:
+                        await send_signal(symbol, oi_pct, price_pct, cfg["oi_period"])
                         history.clear()
 
                 await asyncio.sleep(0.03)
@@ -241,16 +242,18 @@ async def scanner_loop():
 
 # ================== SIGNAL ==================
 
-async def send_signal(symbol: str, pct: float, period: int):
+async def send_signal(symbol: str, oi_pct: float, price_pct: float, period: int):
     today = datetime.now(UTC_PLUS_3).date()
     oi_signals_today[(symbol, today)] += 1
     count = oi_signals_today[(symbol, today)]
 
     link = f"https://www.coinglass.com/tv/Binance_{symbol}"
+    price_sign = "+" if price_pct >= 0 else ""
 
     msg = (
         f"🪙 <b><a href='{link}'>{symbol}</a></b>\n"
-        f"📊 Рост OI: <b>+{pct:.2f}%</b>\n"
+        f"📊 Рост OI: <b>+{oi_pct:.2f}%</b>\n"
+        f"📈 Цена: <b>{price_sign}{price_pct:.2f}%</b>\n"
         f"⏱ Период: {period} мин\n"
         f"🔁 <b>Сигнал 24h:</b> {count}"
     )
@@ -275,4 +278,3 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
-
