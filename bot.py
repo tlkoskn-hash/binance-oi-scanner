@@ -6,13 +6,11 @@ from collections import defaultdict
 
 from telegram import (
     Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
 )
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    CallbackQueryHandler,
     MessageHandler,
     ContextTypes,
     filters,
@@ -34,20 +32,15 @@ BINANCE = "https://fapi.binance.com"
 UTC_PLUS_3 = timezone(timedelta(hours=3))
 
 cfg = {
-    "oi_period": 10,      # minutes
-    "oi_percent": 5.0,    # %
-    "enabled": False,
+    "oi_period": 10,
+    "oi_percent": 5.0,
     "chat_id": None,
 }
 
-# symbol -> list[(timestamp, oi, price)]
 oi_history = {}
-
-# (symbol, date) -> count
 oi_signals_today = defaultdict(int)
 
 scanner_running = False
-
 SYMBOLS_CACHE = []
 LAST_SYMBOL_UPDATE = None
 
@@ -61,7 +54,6 @@ def get_symbols():
             return SYMBOLS_CACHE
 
     r = requests.get(f"{BINANCE}/fapi/v1/ticker/24hr", timeout=10).json()
-
     symbols = [s for s in r if s["symbol"].endswith("USDT")]
     symbols.sort(key=lambda x: float(x["quoteVolume"]), reverse=True)
 
@@ -97,26 +89,20 @@ def get_price(symbol: str):
 # ================== UI ==================
 
 def keyboard():
-    return InlineKeyboardMarkup([
+    return ReplyKeyboardMarkup(
         [
-            InlineKeyboardButton("⏱ OI период", callback_data="oi_period"),
-            InlineKeyboardButton("📈 OI %", callback_data="oi_percent"),
+            ["⏱ OI период", "📈 OI %"],
+            ["📊 Статус"],
         ],
-        [
-            InlineKeyboardButton("📊 Статус", callback_data="status"),
-        ],
-        [
-            InlineKeyboardButton("▶️ ВКЛ", callback_data="on"),
-            InlineKeyboardButton("⛔ ВЫКЛ", callback_data="off"),
-        ],
-    ])
+        resize_keyboard=True,
+        is_persistent=True
+    )
 
 
 def status_text():
     now = datetime.now(UTC_PLUS_3).strftime("%H:%M:%S")
     return (
         "📊 <b>Binance Open Interest Screener</b>\n\n"
-        f"▶️ Включен: <b>{cfg['enabled']}</b>\n\n"
         "📈 <b>Рост OI</b>\n"
         f"• Период: {cfg['oi_period']} мин\n"
         f"• Процент: {cfg['oi_percent']}%\n\n"
@@ -137,50 +123,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard(),
     )
 
-# ================== BUTTONS ==================
-
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    await q.answer()
-    action = q.data
-
-    if action == "on":
-        cfg["enabled"] = True
-    elif action == "off":
-        cfg["enabled"] = False
-    elif action == "status":
-        pass
-    else:
-        context.user_data["edit"] = action
-        await q.message.reply_text(
-            f"Введи значение для <b>{action}</b>",
-            parse_mode="HTML",
-        )
-        return
-
-    await q.message.edit_text(
-        status_text(),
-        parse_mode="HTML",
-        reply_markup=keyboard(),
-    )
-
 # ================== TEXT INPUT ==================
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ALLOWED_USERS:
+        return
+
+    text = update.message.text
+
+    if text == "📊 Статус":
+        await update.message.reply_text(status_text(), parse_mode="HTML")
+        return
+
+    mapping = {
+        "⏱ OI период": "oi_period",
+        "📈 OI %": "oi_percent",
+    }
+
+    if text in mapping:
+        context.user_data["edit"] = mapping[text]
+        await update.message.reply_text("Введите число:")
+        return
+
     key = context.user_data.get("edit")
-    if not key:
-        return
-
-    try:
-        value = float(update.message.text)
-    except ValueError:
-        await update.message.reply_text("❌ Введи число")
-        return
-
-    cfg[key] = int(value) if "period" in key else value
-    context.user_data["edit"] = None
-
-    await update.message.reply_text("✅ Сохранено", reply_markup=keyboard())
+    if key:
+        try:
+            value = float(text)
+            cfg[key] = int(value) if "period" in key else value
+            context.user_data["edit"] = None
+            await update.message.reply_text("✅ Сохранено", reply_markup=keyboard())
+        except:
+            await update.message.reply_text("❌ Введите число")
 
 # ================== SCANNER LOOP ==================
 
@@ -197,7 +170,7 @@ async def scanner_loop():
         while True:
             cycle_start = datetime.now(UTC_PLUS_3)
 
-            if not cfg["enabled"] or not cfg["chat_id"]:
+            if not cfg["chat_id"]:
                 await asyncio.sleep(1)
                 continue
 
@@ -273,7 +246,6 @@ async def on_startup(app):
 app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CallbackQueryHandler(button))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
