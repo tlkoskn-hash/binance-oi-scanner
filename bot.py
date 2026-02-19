@@ -80,6 +80,16 @@ def get_open_interest(symbol: str):
     except Exception:
         return None
 
+def get_all_prices():
+    try:
+        r = requests.get(f"{BINANCE}/fapi/v1/ticker/price", timeout=10).json()
+        if not isinstance(r, list):
+            print("Price error:", r)
+            return {}
+        return {item["symbol"]: float(item["price"]) for item in r}
+    except Exception as e:
+        print("Price request failed:", e)
+        return {}
 
 # ================== UI ==================
 
@@ -278,6 +288,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
