@@ -43,6 +43,7 @@ oi_signals_today = defaultdict(int)
 scanner_running = False
 ALL_SYMBOLS = []
 BATCH_SIZE = 100
+MAX_CONCURRENT_REQUESTS = 20
 batch_index = 0
 
 
@@ -90,6 +91,9 @@ def get_all_prices():
     except Exception as e:
         print("Price request failed:", e)
         return {}
+async def fetch_oi(symbol, semaphore):
+    async with semaphore:
+        return symbol, await asyncio.to_thread(get_open_interest, symbol)
 
 # ================== UI ==================
 
@@ -172,7 +176,7 @@ async def scanner_loop():
     print(">>> OI scanner loop started <<<")
 
     try:
-        # получаем список всех пар один раз
+        # Получаем список всех USDT perpetual один раз
         ALL_SYMBOLS = await asyncio.to_thread(get_all_usdt_symbols)
         print("Total USDT perpetual pairs:", len(ALL_SYMBOLS))
 
@@ -189,7 +193,7 @@ async def scanner_loop():
                 now = datetime.now(UTC_PLUS_3)
                 window = timedelta(minutes=cfg["oi_period"])
 
-                # формируем батч
+                # Формируем батч
                 start = batch_index * BATCH_SIZE
                 end = start + BATCH_SIZE
                 batch = ALL_SYMBOLS[start:end]
@@ -198,11 +202,21 @@ async def scanner_loop():
                     batch_index = 0
                     continue
 
+                # Получаем все цены одним запросом
                 prices = await asyncio.to_thread(get_all_prices)
 
-                for symbol in batch:
+                # Параллельные OI-запросы с ограничением
+                semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
-                    oi = await asyncio.to_thread(get_open_interest, symbol)
+                tasks = [
+                    fetch_oi(symbol, semaphore)
+                    for symbol in batch
+                ]
+
+                results = await asyncio.gather(*tasks)
+
+                for symbol, oi in results:
+
                     if oi is None:
                         continue
 
@@ -212,6 +226,7 @@ async def scanner_loop():
 
                     history = oi_history.setdefault(symbol, [])
                     history.append((now, oi, price))
+
                     history[:] = [
                         (t, o, p)
                         for t, o, p in history
@@ -288,6 +303,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
