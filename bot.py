@@ -42,7 +42,7 @@ oi_signals_today = defaultdict(int)
 
 scanner_running = False
 ALL_SYMBOLS = []
-BATCH_SIZE = 25
+BATCH_SIZE = 50
 batch_index = 0
 
 
@@ -241,7 +241,7 @@ async def scanner_loop():
 
                 print(f"[OI] Проверен батч {batch_index}")
 
-                await asyncio.sleep(10)
+                await asyncio.sleep(3)
 
             except Exception as e:
                 print("SCANNER LOOP ERROR:", e)
@@ -288,6 +288,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
