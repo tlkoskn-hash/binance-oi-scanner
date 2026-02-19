@@ -42,7 +42,7 @@ oi_signals_today = defaultdict(int)
 
 scanner_running = False
 ALL_SYMBOLS = []
-BATCH_SIZE = 50
+BATCH_SIZE = 100
 batch_index = 0
 
 
@@ -288,6 +288,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
