@@ -41,31 +41,43 @@ oi_history = {}
 oi_signals_today = defaultdict(int)
 
 scanner_running = False
+ALL_SYMBOLS = []
+BATCH_SIZE = 25
+batch_index = 0
 
 
 # ================== BINANCE ==================
 
-def get_all_open_interest():
+def get_all_usdt_symbols():
     try:
-        r = requests.get(f"{BINANCE}/fapi/v1/openInterest", timeout=10).json()
-        if not isinstance(r, list):
-            print("OI error:", r)
-            return None
-        return {item["symbol"]: float(item["openInterest"]) for item in r}
+        r = requests.get(f"{BINANCE}/fapi/v1/exchangeInfo", timeout=10).json()
+        if "symbols" not in r:
+            print("exchangeInfo error:", r)
+            return []
+
+        symbols = [
+            s["symbol"]
+            for s in r["symbols"]
+            if s["contractType"] == "PERPETUAL"
+            and s["quoteAsset"] == "USDT"
+            and s["status"] == "TRADING"
+        ]
+
+        return symbols
+
     except Exception as e:
-        print("OI request failed:", e)
-        return None
+        print("exchangeInfo failed:", e)
+        return []
 
-
-def get_all_prices():
+def get_open_interest(symbol: str):
     try:
-        r = requests.get(f"{BINANCE}/fapi/v1/ticker/price", timeout=10).json()
-        if not isinstance(r, list):
-            print("Price error:", r)
-            return None
-        return {item["symbol"]: float(item["price"]) for item in r}
-    except Exception as e:
-        print("Price request failed:", e)
+        r = requests.get(
+            f"{BINANCE}/fapi/v1/openInterest",
+            params={"symbol": symbol},
+            timeout=5,
+        ).json()
+        return float(r["openInterest"])
+    except Exception:
         return None
 
 
@@ -141,7 +153,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================== SCANNER LOOP ==================
 
 async def scanner_loop():
-    global scanner_running
+    global scanner_running, ALL_SYMBOLS, batch_index
 
     if scanner_running:
         return
@@ -150,28 +162,41 @@ async def scanner_loop():
     print(">>> OI scanner loop started <<<")
 
     try:
+        # получаем список всех пар один раз
+        ALL_SYMBOLS = await asyncio.to_thread(get_all_usdt_symbols)
+        print("Total USDT perpetual pairs:", len(ALL_SYMBOLS))
+
         while True:
             try:
                 if not cfg["chat_id"]:
                     await asyncio.sleep(1)
                     continue
 
-                now = datetime.now(UTC_PLUS_3)
-                window = timedelta(minutes=cfg["oi_period"])
-
-                all_oi = await asyncio.to_thread(get_all_open_interest)
-                all_prices = await asyncio.to_thread(get_all_prices)
-
-                if not all_oi or not all_prices:
+                if not ALL_SYMBOLS:
                     await asyncio.sleep(5)
                     continue
 
-                for symbol, oi in all_oi.items():
+                now = datetime.now(UTC_PLUS_3)
+                window = timedelta(minutes=cfg["oi_period"])
 
-                    if not symbol.endswith("USDT"):
+                # формируем батч
+                start = batch_index * BATCH_SIZE
+                end = start + BATCH_SIZE
+                batch = ALL_SYMBOLS[start:end]
+
+                if not batch:
+                    batch_index = 0
+                    continue
+
+                prices = await asyncio.to_thread(get_all_prices)
+
+                for symbol in batch:
+
+                    oi = await asyncio.to_thread(get_open_interest, symbol)
+                    if oi is None:
                         continue
 
-                    price = all_prices.get(symbol)
+                    price = prices.get(symbol)
                     if not price:
                         continue
 
@@ -202,7 +227,9 @@ async def scanner_loop():
                             )
                             history.clear()
 
-                print("[OI] Цикл завершён")
+                batch_index += 1
+
+                print(f"[OI] Проверен батч {batch_index}")
 
                 await asyncio.sleep(10)
 
@@ -212,6 +239,7 @@ async def scanner_loop():
 
     finally:
         scanner_running = False
+
 
 # ================== SIGNAL ==================
 
@@ -250,5 +278,6 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
