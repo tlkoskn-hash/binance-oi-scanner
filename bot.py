@@ -53,14 +53,26 @@ def get_symbols():
         if datetime.now() - LAST_SYMBOL_UPDATE < timedelta(hours=1):
             return SYMBOLS_CACHE
 
-    r = requests.get(f"{BINANCE}/fapi/v1/ticker/24hr", timeout=10).json()
-    symbols = [s for s in r if s["symbol"].endswith("USDT")]
-    symbols.sort(key=lambda x: float(x["quoteVolume"]), reverse=True)
+    try:
+        response = requests.get(f"{BINANCE}/fapi/v1/ticker/24hr", timeout=10)
+        data = response.json()
 
-    SYMBOLS_CACHE = [s["symbol"] for s in symbols[:100]]
-    LAST_SYMBOL_UPDATE = datetime.now()
+        if not isinstance(data, list):
+            print("Binance returned error in get_symbols:", data)
+            return SYMBOLS_CACHE  # возвращаем старый кеш
 
-    return SYMBOLS_CACHE
+        symbols = [s for s in data if s["symbol"].endswith("USDT")]
+        symbols.sort(key=lambda x: float(x["quoteVolume"]), reverse=True)
+
+        SYMBOLS_CACHE = [s["symbol"] for s in symbols[:100]]
+        LAST_SYMBOL_UPDATE = datetime.now()
+
+        return SYMBOLS_CACHE
+
+    except Exception as e:
+        print("get_symbols error:", e)
+        return SYMBOLS_CACHE
+
 
 
 def get_open_interest(symbol: str):
@@ -167,7 +179,13 @@ async def scanner_loop():
     print(">>> OI scanner loop started <<<")
 
     try:
-        while True:
+       while True:
+    try:
+        # весь твой цикл
+    except Exception as e:
+        print("SCANNER LOOP ERROR:", e)
+        await asyncio.sleep(5)
+
             cycle_start = datetime.now(UTC_PLUS_3)
 
             if not cfg["chat_id"]:
@@ -250,3 +268,4 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
