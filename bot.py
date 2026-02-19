@@ -41,62 +41,33 @@ oi_history = {}
 oi_signals_today = defaultdict(int)
 
 scanner_running = False
-SYMBOLS_CACHE = []
-LAST_SYMBOL_UPDATE = None
+
 
 # ================== BINANCE ==================
 
-def get_symbols():
-    global SYMBOLS_CACHE, LAST_SYMBOL_UPDATE
-
-    if SYMBOLS_CACHE and LAST_SYMBOL_UPDATE:
-        if datetime.now() - LAST_SYMBOL_UPDATE < timedelta(hours=1):
-            return SYMBOLS_CACHE
-
+def get_all_open_interest():
     try:
-        response = requests.get(f"{BINANCE}/fapi/v1/ticker/24hr", timeout=10)
-        data = response.json()
-
-        if not isinstance(data, list):
-            print("Binance returned error in get_symbols:", data)
-            return SYMBOLS_CACHE  # возвращаем старый кеш
-
-        symbols = [s for s in data if s["symbol"].endswith("USDT")]
-        symbols.sort(key=lambda x: float(x["quoteVolume"]), reverse=True)
-
-        SYMBOLS_CACHE = [s["symbol"] for s in symbols[:100]]
-        LAST_SYMBOL_UPDATE = datetime.now()
-
-        return SYMBOLS_CACHE
-
+        r = requests.get(f"{BINANCE}/fapi/v1/openInterest", timeout=10).json()
+        if not isinstance(r, list):
+            print("OI error:", r)
+            return None
+        return {item["symbol"]: float(item["openInterest"]) for item in r}
     except Exception as e:
-        print("get_symbols error:", e)
-        return SYMBOLS_CACHE
-
-
-
-def get_open_interest(symbol: str):
-    try:
-        r = requests.get(
-            f"{BINANCE}/fapi/v1/openInterest",
-            params={"symbol": symbol},
-            timeout=5,
-        ).json()
-        return float(r["openInterest"])
-    except Exception:
+        print("OI request failed:", e)
         return None
 
 
-def get_price(symbol: str):
+def get_all_prices():
     try:
-        r = requests.get(
-            f"{BINANCE}/fapi/v1/ticker/price",
-            params={"symbol": symbol},
-            timeout=5,
-        ).json()
-        return float(r["price"])
-    except Exception:
+        r = requests.get(f"{BINANCE}/fapi/v1/ticker/price", timeout=10).json()
+        if not isinstance(r, list):
+            print("Price error:", r)
+            return None
+        return {item["symbol"]: float(item["price"]) for item in r}
+    except Exception as e:
+        print("Price request failed:", e)
         return None
+
 
 # ================== UI ==================
 
@@ -179,54 +150,65 @@ async def scanner_loop():
     print(">>> OI scanner loop started <<<")
 
     try:
-       while True:
-    try:
-        # весь твой цикл
-    except Exception as e:
-        print("SCANNER LOOP ERROR:", e)
-        await asyncio.sleep(5)
-
-            cycle_start = datetime.now(UTC_PLUS_3)
-
-            if not cfg["chat_id"]:
-                await asyncio.sleep(1)
-                continue
-
-            symbols = get_symbols()
-            now = datetime.now(UTC_PLUS_3)
-            window = timedelta(minutes=cfg["oi_period"])
-
-            for symbol in symbols:
-                oi = await asyncio.to_thread(get_open_interest, symbol)
-                price = await asyncio.to_thread(get_price, symbol)
-
-                if oi is None or price is None:
+        while True:
+            try:
+                if not cfg["chat_id"]:
+                    await asyncio.sleep(1)
                     continue
 
-                history = oi_history.setdefault(symbol, [])
-                history.append((now, oi, price))
-                history[:] = [(t, o, p) for t, o, p in history if now - t <= window]
+                now = datetime.now(UTC_PLUS_3)
+                window = timedelta(minutes=cfg["oi_period"])
 
-                if len(history) >= 2:
-                    old_oi = history[0][1]
-                    old_price = history[0][2]
+                all_oi = await asyncio.to_thread(get_all_open_interest)
+                all_prices = await asyncio.to_thread(get_all_prices)
 
-                    if old_oi == 0 or old_price == 0:
+                if not all_oi or not all_prices:
+                    await asyncio.sleep(5)
+                    continue
+
+                for symbol, oi in all_oi.items():
+
+                    if not symbol.endswith("USDT"):
                         continue
 
-                    oi_pct = (oi - old_oi) / old_oi * 100
-                    price_pct = (price - old_price) / old_price * 100
+                    price = all_prices.get(symbol)
+                    if not price:
+                        continue
 
-                    if oi_pct >= cfg["oi_percent"]:
-                        await send_signal(symbol, oi_pct, price_pct, cfg["oi_period"])
-                        history.clear()
+                    history = oi_history.setdefault(symbol, [])
+                    history.append((now, oi, price))
+                    history[:] = [
+                        (t, o, p)
+                        for t, o, p in history
+                        if now - t <= window
+                    ]
 
-                await asyncio.sleep(0.03)
+                    if len(history) >= 2:
+                        old_oi = history[0][1]
+                        old_price = history[0][2]
 
-            cycle_time = (datetime.now(UTC_PLUS_3) - cycle_start).total_seconds()
-            print(f"[OI] Цикл занял: {cycle_time:.2f} сек")
+                        if old_oi == 0 or old_price == 0:
+                            continue
 
-            await asyncio.sleep(10)
+                        oi_pct = (oi - old_oi) / old_oi * 100
+                        price_pct = (price - old_price) / old_price * 100
+
+                        if oi_pct >= cfg["oi_percent"]:
+                            await send_signal(
+                                symbol,
+                                oi_pct,
+                                price_pct,
+                                cfg["oi_period"],
+                            )
+                            history.clear()
+
+                print("[OI] Цикл завершён")
+
+                await asyncio.sleep(10)
+
+            except Exception as e:
+                print("SCANNER LOOP ERROR:", e)
+                await asyncio.sleep(5)
 
     finally:
         scanner_running = False
@@ -268,4 +250,5 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
