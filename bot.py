@@ -81,20 +81,21 @@ def get_open_interest(symbol: str):
     except Exception:
         return None
 
-def get_all_prices():
+def get_price(symbol: str):
     try:
-        r = requests.get(f"{BINANCE}/fapi/v1/ticker/price", timeout=10).json()
-        if not isinstance(r, list):
-            print("Price error:", r)
-            return {}
-        return {item["symbol"]: float(item["price"]) for item in r}
-    except Exception as e:
-        print("Price request failed:", e)
-        return {}
-async def fetch_oi(symbol, semaphore):
+        r = requests.get(
+            f"{BINANCE}/fapi/v1/ticker/price",
+            params={"symbol": symbol},
+            timeout=5,
+        ).json()
+        return float(r["price"])
+    except Exception:
+        return None
+async def fetch_data(symbol, semaphore):
     async with semaphore:
-        return symbol, await asyncio.to_thread(get_open_interest, symbol)
-
+        oi = await asyncio.to_thread(get_open_interest, symbol)
+        price = await asyncio.to_thread(get_price, symbol)
+        return symbol, oi, price
 # ================== UI ==================
 
 def keyboard():
@@ -202,31 +203,25 @@ async def scanner_loop():
                     batch_index = 0
                     continue
 
-                # Получаем все цены одним запросом
-                prices = await asyncio.to_thread(get_all_prices)
-
-                # Параллельные OI-запросы с ограничением
+                # Параллельные OI + price запросы
                 semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
 
                 tasks = [
-                    fetch_oi(symbol, semaphore)
+                    fetch_data(symbol, semaphore)
                     for symbol in batch
                 ]
 
                 results = await asyncio.gather(*tasks)
 
-                for symbol, oi in results:
+                for symbol, oi, price in results:
 
-                    if oi is None:
-                        continue
-
-                    price = prices.get(symbol)
-                    if not price:
+                    if oi is None or price is None:
                         continue
 
                     history = oi_history.setdefault(symbol, [])
                     history.append((now, oi, price))
 
+                    # Оставляем только данные в пределах окна
                     history[:] = [
                         (t, o, p)
                         for t, o, p in history
@@ -264,8 +259,6 @@ async def scanner_loop():
 
     finally:
         scanner_running = False
-
-
 # ================== SIGNAL ==================
 
 async def send_signal(symbol: str, oi_pct: float, price_pct: float, period: int):
@@ -303,6 +296,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
