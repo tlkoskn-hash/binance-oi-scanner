@@ -172,33 +172,35 @@ async def scanner_loop():
                     async with websockets.connect(url, ping_interval=20) as ws:
                         print(f"WS connected ({len(symbol_list)} symbols)")
 
+                        # формируем список stream
                         params = []
-for s in symbol_list:
-    s = s.lower()
-    params.append(f"{s}@openInterest")
-    params.append(f"{s}@ticker")
-    params.append(f"{s}@markPrice")
+                        for s in symbol_list:
+                            s = s.lower()
+                            params.append(f"{s}@openInterest")
+                            params.append(f"{s}@ticker")
+                            params.append(f"{s}@markPrice")
 
-# подписываемся батчами по 100 stream
-chunk_size = 100
+                        # подписываемся батчами по 100 stream
+                        chunk_size = 100
 
-for i in range(0, len(params), chunk_size):
-    chunk = params[i:i + chunk_size]
+                        for i in range(0, len(params), chunk_size):
+                            chunk = params[i:i + chunk_size]
 
-    subscribe_msg = {
-        "method": "SUBSCRIBE",
-        "params": chunk,
-        "id": i
-    }
+                            subscribe_msg = {
+                                "method": "SUBSCRIBE",
+                                "params": chunk,
+                                "id": i
+                            }
 
-    await ws.send(json.dumps(subscribe_msg))
-    await asyncio.sleep(0.2)  # защита от flood
+                            await ws.send(json.dumps(subscribe_msg))
+                            await asyncio.sleep(0.2)
 
-print("Subscribed chunk")
+                        print("Subscribed chunk")
 
                         async for message in ws:
                             data = json.loads(message)
 
+                            # Binance иногда шлёт ответы без data
                             if "data" not in data:
                                 continue
 
@@ -211,6 +213,7 @@ print("Subscribed chunk")
 
                             info = market_data.setdefault(symbol, {})
 
+                            # ========= OI =========
                             if "@openinterest" in stream:
 
                                 info["oi"] = float(payload["oi"])
@@ -223,6 +226,7 @@ print("Subscribed chunk")
                                 history = oi_history.setdefault(symbol, [])
                                 history.append((now, info["oi"]))
 
+                                # чистим историю
                                 history[:] = [
                                     (t, o)
                                     for t, o in history
@@ -247,10 +251,12 @@ print("Subscribed chunk")
                                         )
                                         history.clear()
 
+                            # ========= TICKER =========
                             elif "@ticker" in stream:
                                 info["price"] = float(payload["c"])
                                 info["volume"] = float(payload["q"])
 
+                            # ========= FUNDING =========
                             elif "@markprice" in stream:
                                 info["funding"] = float(payload["r"])
 
@@ -259,7 +265,10 @@ print("Subscribed chunk")
                     print("Reconnecting in 5 seconds...")
                     await asyncio.sleep(5)
 
-        tasks = [asyncio.create_task(run_socket(chunk)) for chunk in symbol_chunks]
+        tasks = [
+            asyncio.create_task(run_socket(chunk))
+            for chunk in symbol_chunks
+        ]
 
         await asyncio.gather(*tasks)
 
@@ -304,6 +313,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
