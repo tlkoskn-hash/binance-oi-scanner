@@ -1,3 +1,4 @@
+import aiohttp
 import asyncio
 import requests
 import os
@@ -39,7 +40,7 @@ cfg = {
 
 oi_history = {}
 oi_signals_today = defaultdict(int)
-
+session = None
 scanner_running = False
 ALL_SYMBOLS = []
 
@@ -66,15 +67,16 @@ def get_all_usdt_symbols():
         print("exchangeInfo failed:", e)
         return []
 
-def get_open_interest(symbol: str):
+async def get_open_interest(symbol: str):
     try:
-        r = requests.get(
+        async with session.get(
             f"{BINANCE}/fapi/v1/openInterest",
             params={"symbol": symbol},
-            timeout=5,
-        ).json()
-        return float(r["openInterest"])
-    except Exception:
+            timeout=aiohttp.ClientTimeout(total=5)
+        ) as r:
+            data = await r.json()
+            return float(data["openInterest"])
+    except:
         return None
 
 async def get_all_prices():
@@ -187,7 +189,7 @@ async def scanner_loop():
                 # === 1. Последовательно проверяем OI ===
                 for symbol in ALL_SYMBOLS:
 
-                    oi = await asyncio.to_thread(get_open_interest, symbol)
+                    oi = await get_open_interest(symbol)
 
                     if oi is None:
                         continue
@@ -273,5 +275,6 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
