@@ -264,7 +264,7 @@ async def scanner_loop():
 
                             oi_pct = (oi - old_oi) / old_oi * 100
 
-                            print(f"{symbol} OI change: {oi_pct:.3f}%")
+                           # print(f"{symbol} OI change: {oi_pct:.3f}%")
 
                             if oi_pct >= cfg["oi_percent"] and cfg["chat_id"]:
 
@@ -337,6 +337,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
