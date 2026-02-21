@@ -141,7 +141,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ================== SCANNER LOOP ==================
-# ================== SCANNER LOOP ==================
 async def scanner_loop():
     global scanner_running, ALL_SYMBOLS
 
@@ -333,6 +332,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
