@@ -229,7 +229,7 @@ async def scanner_loop():
                 try:
                     now = datetime.now(UTC_PLUS_3)
                     window = timedelta(minutes=cfg["oi_period"])
-
+                    cycle_start = datetime.now()
                     for symbol in ALL_SYMBOLS:
 
                         r = await asyncio.to_thread(
@@ -282,7 +282,8 @@ async def scanner_loop():
                                 history.clear()
 
                         await asyncio.sleep(0.05)  # защита от лимита
-
+                    cycle_time = (datetime.now() - cycle_start).total_seconds()
+                    print(f"FULL OI CYCLE TIME: {cycle_time:.2f} sec")
                     await asyncio.sleep(5)
 
                 except Exception as e:
@@ -336,6 +337,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
