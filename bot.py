@@ -281,7 +281,7 @@ async def scanner_loop():
 
                                 history.clear()
 
-                        await asyncio.sleep(0.01)  # защита от лимита
+                        await asyncio.sleep(0.03)  # защита от лимита
                     cycle_time = (datetime.now() - cycle_start).total_seconds()
                     print(f"FULL OI CYCLE TIME: {cycle_time:.2f} sec")
                     await asyncio.sleep(5)
@@ -337,6 +337,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
