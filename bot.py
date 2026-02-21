@@ -267,6 +267,8 @@ async def send_signal(symbol: str, oi_pct: float, price_pct: float, period: int)
 # ================== MAIN ==================
 
 async def on_startup(app):
+    global session
+    session = aiohttp.ClientSession()
     asyncio.create_task(scanner_loop())
 
 app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
@@ -275,6 +277,7 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
