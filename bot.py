@@ -141,6 +141,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ================== SCANNER LOOP ==================
+# ================== SCANNER LOOP ==================
 async def scanner_loop():
     global scanner_running, ALL_SYMBOLS
 
@@ -158,10 +159,10 @@ async def scanner_loop():
             return
 
         # ==========================================
-        # 1️⃣ MARKET WEBSOCKETS (разбивка на чанки)
+        # 1️⃣ MARKET WEBSOCKETS (COMBINED STREAM)
         # ==========================================
 
-        SYMBOLS_PER_SOCKET = 250  # безопасно < 1024 stream
+        SYMBOLS_PER_SOCKET = 250  # безопасный размер
 
         symbol_chunks = [
             ALL_SYMBOLS[i:i + SYMBOLS_PER_SOCKET]
@@ -170,38 +171,31 @@ async def scanner_loop():
 
         async def run_market_socket(symbol_list):
 
-            url = "wss://fstream.binance.com/ws"
+            # формируем combined stream URL
+            streams = []
+            for s in symbol_list:
+                s = s.lower()
+                streams.append(f"{s}@ticker")
+                streams.append(f"{s}@markPrice")
+
+            stream_url = "/".join(streams)
+            url = f"wss://fstream.binance.com/stream?streams={stream_url}"
 
             while True:
                 try:
                     async with websockets.connect(url, ping_interval=20) as ws:
                         print(f"WS market connected ({len(symbol_list)} symbols)")
 
-                        params = []
-                        for s in symbol_list:
-                            s = s.lower()
-                            params.append(f"{s}@ticker")
-                            params.append(f"{s}@markPrice")
-
-                        # подписка батчами по 100
-                        for i in range(0, len(params), 100):
-                            chunk = params[i:i + 100]
-
-                            await ws.send(json.dumps({
-                                "method": "SUBSCRIBE",
-                                "params": chunk,
-                                "id": i
-                            }))
-
-                            await asyncio.sleep(0.2)
-
-                        print("WS market subscribed chunk")
-
                         async for message in ws:
-                            payload = json.loads(message)
 
-                            event_type = payload.get("e")
-                            symbol = payload.get("s")
+                            payload = json.loads(message)
+                            data = payload.get("data")
+
+                            if not data:
+                                continue
+
+                            event_type = data.get("e")
+                            symbol = data.get("s")
 
                             if not symbol or not event_type:
                                 continue
@@ -209,11 +203,11 @@ async def scanner_loop():
                             info = market_data.setdefault(symbol, {})
 
                             if event_type == "24hrTicker":
-                                info["price"] = float(payload["c"])
-                                info["volume"] = float(payload["q"])
+                                info["price"] = float(data["c"])
+                                info["volume"] = float(data["q"])
 
                             elif event_type == "markPriceUpdate":
-                                info["funding"] = float(payload["r"])
+                                info["funding"] = float(data["r"])
 
                 except Exception as e:
                     print("WS MARKET ERROR:", e)
@@ -230,6 +224,7 @@ async def scanner_loop():
                     now = datetime.now(UTC_PLUS_3)
                     window = timedelta(minutes=cfg["oi_period"])
                     cycle_start = datetime.now()
+
                     for symbol in ALL_SYMBOLS:
 
                         r = await asyncio.to_thread(
@@ -264,8 +259,6 @@ async def scanner_loop():
 
                             oi_pct = (oi - old_oi) / old_oi * 100
 
-                           # print(f"{symbol} OI change: {oi_pct:.3f}%")
-
                             if oi_pct >= cfg["oi_percent"] and cfg["chat_id"]:
 
                                 info = market_data.get(symbol, {})
@@ -281,16 +274,19 @@ async def scanner_loop():
 
                                 history.clear()
 
-                        await asyncio.sleep(0.03)  # защита от лимита
+                        # защита от rate limit
+                        await asyncio.sleep(0.03)
+
                     cycle_time = (datetime.now() - cycle_start).total_seconds()
                     print(f"FULL OI CYCLE TIME: {cycle_time:.2f} sec")
+
                     await asyncio.sleep(5)
 
                 except Exception as e:
                     print("OI LOOP ERROR:", e)
                     await asyncio.sleep(5)
 
-        # запуск нескольких market websocket + oi loop
+        # запуск всех market websocket + oi loop
         await asyncio.gather(
             *[asyncio.create_task(run_market_socket(chunk)) for chunk in symbol_chunks],
             oi_loop()
@@ -337,6 +333,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
