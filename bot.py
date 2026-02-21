@@ -139,6 +139,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text("❌ Введите число")
 
+
+# ================== SCANNER LOOP ==================
 # ================== SCANNER LOOP ==================
 async def scanner_loop():
     global scanner_running, ALL_SYMBOLS
@@ -147,7 +149,7 @@ async def scanner_loop():
         return
 
     scanner_running = True
-    print(">>> WS PRO SCANNER STARTED <<<")
+    print(">>> HYBRID SCANNER STARTED <<<")
 
     try:
         ALL_SYMBOLS = await asyncio.to_thread(get_all_usdt_symbols)
@@ -156,52 +158,42 @@ async def scanner_loop():
         if not ALL_SYMBOLS:
             return
 
-        SYMBOLS_PER_SOCKET = 300
-
-        symbol_chunks = [
-            ALL_SYMBOLS[i:i + SYMBOLS_PER_SOCKET]
-            for i in range(0, len(ALL_SYMBOLS), SYMBOLS_PER_SOCKET)
-        ]
-
-        async def run_socket(symbol_list):
+        # ----------------------------
+        # 1️⃣ WEBSOCKET MARKET DATA
+        # ----------------------------
+        async def market_socket():
 
             url = "wss://fstream.binance.com/ws"
 
             while True:
                 try:
                     async with websockets.connect(url, ping_interval=20) as ws:
-                        print(f"WS connected ({len(symbol_list)} symbols)")
+                        print("WS market connected")
 
-                        # формируем список stream
                         params = []
-                        for s in symbol_list:
+                        for s in ALL_SYMBOLS:
                             s = s.lower()
-                            params.append(f"{s}@openInterest")
                             params.append(f"{s}@ticker")
                             params.append(f"{s}@markPrice")
 
-                        # подписка батчами по 100 stream
-                        chunk_size = 100
+                        # подписка батчами по 100
+                        for i in range(0, len(params), 100):
+                            chunk = params[i:i + 100]
 
-                        for i in range(0, len(params), chunk_size):
-                            chunk = params[i:i + chunk_size]
-
-                            subscribe_msg = {
+                            await ws.send(json.dumps({
                                 "method": "SUBSCRIBE",
                                 "params": chunk,
                                 "id": i
-                            }
+                            }))
 
-                            await ws.send(json.dumps(subscribe_msg))
                             await asyncio.sleep(0.2)
 
-                        print("Subscribed chunk")
+                        print("WS market subscribed")
 
                         async for message in ws:
 
                             payload = json.loads(message)
 
-                            # В RAW режиме нет stream/data
                             event_type = payload.get("e")
                             symbol = payload.get("s")
 
@@ -210,67 +202,94 @@ async def scanner_loop():
 
                             info = market_data.setdefault(symbol, {})
 
-                            # ========= OPEN INTEREST =========
-                            if event_type == "openInterest":
-
-                                info["oi"] = float(payload["oi"])
-                                now = datetime.now(UTC_PLUS_3)
-
-                                if not cfg["chat_id"]:
-                                    continue
-
-                                window = timedelta(minutes=cfg["oi_period"])
-                                history = oi_history.setdefault(symbol, [])
-                                history.append((now, info["oi"]))
-
-                                # чистим историю по окну
-                                history[:] = [
-                                    (t, o)
-                                    for t, o in history
-                                    if now - t <= window
-                                ]
-
-                                if len(history) >= 2:
-                                    old_oi = history[0][1]
-                                    if old_oi == 0:
-                                        continue
-
-                                    oi_pct = (info["oi"] - old_oi) / old_oi * 100
-
-                                    # DEBUG
-                                    print(f"{symbol} OI change: {oi_pct:.3f}%")
-
-                                    if oi_pct >= cfg["oi_percent"]:
-                                        await send_signal_ws(
-                                            symbol,
-                                            oi_pct,
-                                            info.get("price", 0),
-                                            info.get("volume", 0),
-                                            info.get("funding", 0),
-                                            cfg["oi_period"],
-                                        )
-                                        history.clear()
-
-                            # ========= 24H TICKER =========
-                            elif event_type == "24hrTicker":
+                            if event_type == "24hrTicker":
                                 info["price"] = float(payload["c"])
                                 info["volume"] = float(payload["q"])
 
-                            # ========= FUNDING =========
                             elif event_type == "markPriceUpdate":
                                 info["funding"] = float(payload["r"])
 
                 except Exception as e:
-                    print("WS ERROR:", e)
-                    print("Reconnecting in 5 seconds...")
+                    print("WS MARKET ERROR:", e)
                     await asyncio.sleep(5)
 
-        tasks = [
-            asyncio.create_task(run_socket(chunk))
-            for chunk in symbol_chunks
-        ]
+        # ----------------------------
+        # 2️⃣ OPEN INTEREST LOOP (REST)
+        # ----------------------------
+        async def oi_loop():
 
-        await asyncio.gather(*tasks)
+            while True:
+                try:
+                    now = datetime.now(UTC_PLUS_3)
+                    window = timedelta(minutes=cfg["oi_period"])
+
+                    for symbol in ALL_SYMBOLS:
+
+                        # --- ИСПРАВЛЕННЫЙ REST ЗАПРОС ---
+                        r = await asyncio.to_thread(
+                            requests.get,
+                            f"{BINANCE}/fapi/v1/openInterest",
+                            params={"symbol": symbol},
+                            timeout=5
+                        )
+
+                        data = r.json()
+
+                        # --- защита от ошибки ответа ---
+                        if "openInterest" not in data:
+                            continue
+
+                        oi = float(data["openInterest"])
+
+                        history = oi_history.setdefault(symbol, [])
+                        history.append((now, oi))
+
+                        # чистим историю по окну
+                        history[:] = [
+                            (t, o)
+                            for t, o in history
+                            if now - t <= window
+                        ]
+
+                        if len(history) >= 2:
+
+                            old_oi = history[0][1]
+                            if old_oi == 0:
+                                continue
+
+                            oi_pct = (oi - old_oi) / old_oi * 100
+
+                            # DEBUG
+                            print(f"{symbol} OI change: {oi_pct:.3f}%")
+
+                            if oi_pct >= cfg["oi_percent"] and cfg["chat_id"]:
+
+                                info = market_data.get(symbol, {})
+
+                                await send_signal_ws(
+                                    symbol,
+                                    oi_pct,
+                                    info.get("price", 0),
+                                    info.get("volume", 0),
+                                    info.get("funding", 0),
+                                    cfg["oi_period"],
+                                )
+
+                                history.clear()
+
+                        # защита от rate limit
+                        await asyncio.sleep(0.05)
+
+                    await asyncio.sleep(5)
+
+                except Exception as e:
+                    print("OI LOOP ERROR:", e)
+                    await asyncio.sleep(5)
+
+        await asyncio.gather(
+            market_socket(),
+            oi_loop()
+        )
 
     finally:
         scanner_running = False
@@ -313,6 +332,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
