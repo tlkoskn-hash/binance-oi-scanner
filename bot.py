@@ -41,10 +41,6 @@ oi_signals_today = defaultdict(int)
 
 scanner_running = False
 ALL_SYMBOLS = []
-BATCH_SIZE = 100
-MAX_CONCURRENT_REQUESTS = 25
-batch_index = 0
-
 
 # ================== BINANCE ==================
 
@@ -80,21 +76,15 @@ def get_open_interest(symbol: str):
     except Exception:
         return None
 
-def get_price(symbol: str):
+async def get_all_prices():
     try:
         r = requests.get(
             f"{BINANCE}/fapi/v1/ticker/price",
-            params={"symbol": symbol},
-            timeout=5,
+            timeout=10,
         ).json()
-        return float(r["price"])
+        return {item["symbol"]: float(item["price"]) for item in r}
     except Exception:
-        return None
-async def fetch_data(symbol, semaphore):
-    async with semaphore:
-        oi = await asyncio.to_thread(get_open_interest, symbol)
-        price = await asyncio.to_thread(get_price, symbol)
-        return symbol, oi, price
+        return {}
 # ================== UI ==================
 
 def keyboard():
@@ -165,9 +155,10 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Введите число")
 
 # ================== SCANNER LOOP ==================
+import time
 
 async def scanner_loop():
-    global scanner_running, ALL_SYMBOLS, batch_index
+    global scanner_running, ALL_SYMBOLS
 
     if scanner_running:
         return
@@ -176,7 +167,6 @@ async def scanner_loop():
     print(">>> OI scanner loop started <<<")
 
     try:
-        # Получаем список всех USDT perpetual один раз
         ALL_SYMBOLS = await asyncio.to_thread(get_all_usdt_symbols)
         print("Total USDT perpetual pairs:", len(ALL_SYMBOLS))
 
@@ -186,71 +176,59 @@ async def scanner_loop():
                     await asyncio.sleep(1)
                     continue
 
-                if not ALL_SYMBOLS:
-                    await asyncio.sleep(5)
-                    continue
+                cycle_start = time.time()
 
                 now = datetime.now(UTC_PLUS_3)
                 window = timedelta(minutes=cfg["oi_period"])
 
-                # Формируем батч
-                start = batch_index * BATCH_SIZE
-                end = start + BATCH_SIZE
-                batch = ALL_SYMBOLS[start:end]
+                triggered = []
 
-                if not batch:
-                    batch_index = 0
-                    continue
+                # === 1. Последовательно проверяем OI ===
+                for symbol in ALL_SYMBOLS:
 
-                # Параллельные OI + price запросы
-                semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+                    oi = await asyncio.to_thread(get_open_interest, symbol)
 
-                tasks = [
-                    fetch_data(symbol, semaphore)
-                    for symbol in batch
-                ]
-
-                results = await asyncio.gather(*tasks)
-
-                for symbol, oi, price in results:
-
-                    if oi is None or price is None:
+                    if oi is None:
                         continue
 
                     history = oi_history.setdefault(symbol, [])
-                    history.append((now, oi, price))
+                    history.append((now, oi))
 
-                    # Оставляем только данные в пределах окна
                     history[:] = [
-                        (t, o, p)
-                        for t, o, p in history
+                        (t, o)
+                        for t, o in history
                         if now - t <= window
                     ]
 
                     if len(history) >= 2:
                         old_oi = history[0][1]
-                        old_price = history[0][2]
 
-                        if old_oi == 0 or old_price == 0:
+                        if old_oi == 0:
                             continue
 
                         oi_pct = (oi - old_oi) / old_oi * 100
-                        price_pct = (price - old_price) / old_price * 100
 
                         if oi_pct >= cfg["oi_percent"]:
-                            await send_signal(
-                                symbol,
-                                oi_pct,
-                                price_pct,
-                                cfg["oi_period"],
-                            )
+                            triggered.append((symbol, oi_pct))
                             history.clear()
 
-                batch_index += 1
+                # === 2. Получаем ВСЕ цены ОДИН раз ===
+                prices = {}
+                if triggered:
+                    prices = await asyncio.to_thread(get_all_prices)
 
-                print(f"[OI] Проверен батч {batch_index}")
+                # === 3. Отправляем сигналы ===
+                for symbol, oi_pct in triggered:
+                    price = prices.get(symbol, 0)
+                    await send_signal(
+                        symbol,
+                        oi_pct,
+                        0,  # price_pct пока убрали
+                        cfg["oi_period"],
+                    )
 
-                await asyncio.sleep(3)
+                cycle_time = time.time() - cycle_start
+                print(f"Full cycle time: {cycle_time:.2f} sec")
 
             except Exception as e:
                 print("SCANNER LOOP ERROR:", e)
@@ -292,3 +270,4 @@ app = ApplicationBuilder().token(TOKEN).post_init(on_startup).build()
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
+
