@@ -102,12 +102,23 @@ async def get_open_interest(symbol: str):
 
 async def get_all_prices():
     try:
-        r = requests.get(
+        async with session.get(
             f"{BINANCE}/fapi/v1/ticker/price",
-            timeout=10,
-        ).json()
-        return {item["symbol"]: float(item["price"]) for item in r}
-    except Exception:
+            timeout=aiohttp.ClientTimeout(total=10)
+        ) as r:
+            data = await r.json()
+
+        if not isinstance(data, list):
+            return {}
+
+        return {
+            item["symbol"]: float(item["price"])
+            for item in data
+            if "symbol" in item and "price" in item
+        }
+
+    except Exception as e:
+        print("PRICE ERROR:", e)
         return {}
 # ================== UI ==================
 
@@ -239,7 +250,7 @@ async def scanner_loop():
                 # === 2. Получаем ВСЕ цены ОДИН раз ===
                 prices = {}
                 if triggered:
-                    prices = await asyncio.to_thread(get_all_prices)
+                    prices = await get_all_prices()
 
                 # === 3. Отправляем сигналы ===
                 for symbol, oi_pct in triggered:
@@ -298,6 +309,7 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
