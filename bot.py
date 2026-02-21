@@ -46,25 +46,46 @@ ALL_SYMBOLS = []
 
 # ================== BINANCE ==================
 
-def get_all_usdt_symbols():
+def get_top_200_symbols():
     try:
-        r = requests.get(f"{BINANCE}/fapi/v1/exchangeInfo", timeout=10).json()
-        if "symbols" not in r:
-            print("exchangeInfo error:", r)
-            return []
+        # получаем 24h статистику
+        tickers = requests.get(
+            f"{BINANCE}/fapi/v1/ticker/24hr",
+            timeout=10
+        ).json()
 
-        symbols = [
+        # получаем список торгуемых perpetual
+        exchange = requests.get(
+            f"{BINANCE}/fapi/v1/exchangeInfo",
+            timeout=10
+        ).json()
+
+        valid_symbols = {
             s["symbol"]
-            for s in r["symbols"]
+            for s in exchange["symbols"]
             if s["contractType"] == "PERPETUAL"
             and s["quoteAsset"] == "USDT"
             and s["status"] == "TRADING"
+        }
+
+        # фильтруем и сортируем по объёму
+        filtered = [
+            t for t in tickers
+            if t["symbol"] in valid_symbols
         ]
 
-        return symbols
+        sorted_by_volume = sorted(
+            filtered,
+            key=lambda x: float(x["quoteVolume"]),
+            reverse=True
+        )
+
+        top_200 = [t["symbol"] for t in sorted_by_volume[:200]]
+
+        return top_200
 
     except Exception as e:
-        print("exchangeInfo failed:", e)
+        print("Error getting top 200:", e)
         return []
 
 async def get_open_interest(symbol: str):
@@ -170,7 +191,7 @@ async def scanner_loop():
     print(">>> OI scanner loop started <<<")
 
     try:
-        ALL_SYMBOLS = await asyncio.to_thread(get_all_usdt_symbols)
+        ALL_SYMBOLS = await asyncio.to_thread(get_top_200_symbols)
         print("Total USDT perpetual pairs:", len(ALL_SYMBOLS))
 
         while True:
@@ -277,6 +298,7 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
