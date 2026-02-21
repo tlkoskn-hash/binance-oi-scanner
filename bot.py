@@ -180,7 +180,7 @@ async def scanner_loop():
                             params.append(f"{s}@ticker")
                             params.append(f"{s}@markPrice")
 
-                        # подписываемся батчами по 100 stream
+                        # подписка батчами по 100 stream
                         chunk_size = 100
 
                         for i in range(0, len(params), chunk_size):
@@ -198,24 +198,20 @@ async def scanner_loop():
                         print("Subscribed chunk")
 
                         async for message in ws:
-                            print("RAW MESSAGE:", message)
-                            data = json.loads(message)
 
-                            # Binance иногда шлёт ответы без data
-                            if "data" not in data:
-                                continue
+                            payload = json.loads(message)
 
-                            stream = data["stream"]
-                            payload = data["data"]
-
+                            # В RAW режиме нет stream/data
+                            event_type = payload.get("e")
                             symbol = payload.get("s")
-                            if not symbol:
+
+                            if not symbol or not event_type:
                                 continue
 
                             info = market_data.setdefault(symbol, {})
 
-                            # ========= OI =========
-                            if "@openinterest" in stream:
+                            # ========= OPEN INTEREST =========
+                            if event_type == "openInterest":
 
                                 info["oi"] = float(payload["oi"])
                                 now = datetime.now(UTC_PLUS_3)
@@ -227,7 +223,7 @@ async def scanner_loop():
                                 history = oi_history.setdefault(symbol, [])
                                 history.append((now, info["oi"]))
 
-                                # чистим историю
+                                # чистим историю по окну
                                 history[:] = [
                                     (t, o)
                                     for t, o in history
@@ -240,7 +236,8 @@ async def scanner_loop():
                                         continue
 
                                     oi_pct = (info["oi"] - old_oi) / old_oi * 100
-                                     # === DEBUG LOG ===
+
+                                    # DEBUG
                                     print(f"{symbol} OI change: {oi_pct:.3f}%")
 
                                     if oi_pct >= cfg["oi_percent"]:
@@ -254,13 +251,13 @@ async def scanner_loop():
                                         )
                                         history.clear()
 
-                            # ========= TICKER =========
-                            elif "@ticker" in stream:
+                            # ========= 24H TICKER =========
+                            elif event_type == "24hrTicker":
                                 info["price"] = float(payload["c"])
                                 info["volume"] = float(payload["q"])
 
                             # ========= FUNDING =========
-                            elif "@markprice" in stream:
+                            elif event_type == "markPriceUpdate":
                                 info["funding"] = float(payload["r"])
 
                 except Exception as e:
@@ -316,6 +313,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
