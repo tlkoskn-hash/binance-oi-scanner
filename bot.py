@@ -173,21 +173,28 @@ async def scanner_loop():
                         print(f"WS connected ({len(symbol_list)} symbols)")
 
                         params = []
-                        for s in symbol_list:
-                            s = s.lower()
-                            params.append(f"{s}@openInterest")
-                            params.append(f"{s}@ticker")
-                            params.append(f"{s}@markPrice")
+for s in symbol_list:
+    s = s.lower()
+    params.append(f"{s}@openInterest")
+    params.append(f"{s}@ticker")
+    params.append(f"{s}@markPrice")
 
-                        subscribe_msg = {
-                            "method": "SUBSCRIBE",
-                            "params": params,
-                            "id": 1
-                        }
+# подписываемся батчами по 100 stream
+chunk_size = 100
 
-                        await ws.send(json.dumps(subscribe_msg))
+for i in range(0, len(params), chunk_size):
+    chunk = params[i:i + chunk_size]
 
-                        print("Subscribed chunk")
+    subscribe_msg = {
+        "method": "SUBSCRIBE",
+        "params": chunk,
+        "id": i
+    }
+
+    await ws.send(json.dumps(subscribe_msg))
+    await asyncio.sleep(0.2)  # защита от flood
+
+print("Subscribed chunk")
 
                         async for message in ws:
                             data = json.loads(message)
@@ -297,6 +304,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
