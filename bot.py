@@ -154,91 +154,104 @@ async def scanner_loop():
         print("Total USDT perpetual pairs:", len(ALL_SYMBOLS))
 
         if not ALL_SYMBOLS:
-            print("No symbols found")
             return
 
-        # на одну пару 3 стрима → делаем запас
-        SYMBOLS_PER_SOCKET = 300
+        url = "wss://fstream.binance.com/ws"
 
-        symbol_chunks = [
-            ALL_SYMBOLS[i:i + SYMBOLS_PER_SOCKET]
-            for i in range(0, len(ALL_SYMBOLS), SYMBOLS_PER_SOCKET)
-        ]
+        while True:
+            try:
+                async with websockets.connect(url, ping_interval=20) as ws:
+                    print("WS connected")
 
-        async def run_socket(symbol_list):
+                    # формируем список stream
+                    params = []
+                    for s in ALL_SYMBOLS:
+                        s = s.lower()
+                        params.append(f"{s}@openInterest")
+                        params.append(f"{s}@ticker")
+                        params.append(f"{s}@markPrice")
 
-            streams = "/".join(
-                f"{s.lower()}@openInterest/"
-                f"{s.lower()}@ticker/"
-                f"{s.lower()}@markPrice"
-                for s in symbol_list
-            )
+                    # подписываемся пачками по 200
+                    chunk_size = 200
+                    for i in range(0, len(params), chunk_size):
+                        chunk = params[i:i + chunk_size]
 
-            url = f"wss://fstream.binance.com/stream?streams={streams}"
+                        subscribe_msg = {
+                            "method": "SUBSCRIBE",
+                            "params": chunk,
+                            "id": i
+                        }
 
-            while True:
-                try:
-                    async with websockets.connect(url, ping_interval=20) as ws:
-                        print(f"WS connected ({len(symbol_list)} symbols)")
+                        await ws.send(json.dumps(subscribe_msg))
 
-                        async for message in ws:
+                    print("Subscribed to all streams")
 
-                            data = json.loads(message)
-                            if "data" not in data:
+                    async for message in ws:
+                        data = json.loads(message)
+
+                        if "data" not in data:
+                            continue
+
+                        stream = data["stream"]
+                        payload = data["data"]
+
+                        symbol = payload.get("s")
+                        if not symbol:
+                            continue
+
+                        info = market_data.setdefault(symbol, {})
+
+                        # ========= OI =========
+                        if "@openinterest" in stream:
+
+                            info["oi"] = float(payload["oi"])
+                            now = datetime.now(UTC_PLUS_3)
+
+                            if not cfg["chat_id"]:
                                 continue
 
-                            stream = data["stream"]
-                            payload = data["data"]
+                            window = timedelta(minutes=cfg["oi_period"])
+                            history = oi_history.setdefault(symbol, [])
+                            history.append((now, info["oi"]))
 
-                            symbol = payload.get("s")
-                            if not symbol:
-                                continue
+                            history[:] = [
+                                (t, o)
+                                for t, o in history
+                                if now - t <= window
+                            ]
 
-                            info = market_data.setdefault(symbol, {})
-
-                            # ========= OI =========
-                            if "@openinterest" in stream:
-
-                                info["oi"] = float(payload["oi"])
-                                now = datetime.now(UTC_PLUS_3)
-
-                                if not cfg["chat_id"]:
+                            if len(history) >= 2:
+                                old_oi = history[0][1]
+                                if old_oi == 0:
                                     continue
 
-                                window = timedelta(minutes=cfg["oi_period"])
-                                history = oi_history.setdefault(symbol, [])
-                                history.append((now, info["oi"]))
+                                oi_pct = (info["oi"] - old_oi) / old_oi * 100
 
-                                history[:] = [
-                                    (t, o)
-                                    for t, o in history
-                                    if now - t <= window
-                                ]
+                                if oi_pct >= cfg["oi_percent"]:
+                                    await send_signal_ws(
+                                        symbol,
+                                        oi_pct,
+                                        info.get("price", 0),
+                                        info.get("volume", 0),
+                                        info.get("funding", 0),
+                                        cfg["oi_period"],
+                                    )
+                                    history.clear()
 
-                                if len(history) >= 2:
-                                    old_oi = history[0][1]
-                                    if old_oi == 0:
-                                        continue
+                        elif "@ticker" in stream:
+                            info["price"] = float(payload["c"])
+                            info["volume"] = float(payload["q"])
 
-                                    oi_pct = (info["oi"] - old_oi) / old_oi * 100
+                        elif "@markprice" in stream:
+                            info["funding"] = float(payload["r"])
 
-                                    if oi_pct >= cfg["oi_percent"]:
+            except Exception as e:
+                print("WS ERROR:", e)
+                print("Reconnecting in 5 seconds...")
+                await asyncio.sleep(5)
 
-                                        price = info.get("price", 0)
-                                        volume = info.get("volume", 0)
-                                        funding = info.get("funding", 0)
-
-                                        await send_signal_ws(
-                                            symbol,
-                                            oi_pct,
-                                            price,
-                                            volume,
-                                            funding,
-                                            cfg["oi_period"],
-                                        )
-
-                                        history.clear()
-
+    finally:
+        scanner_running = False
                             # ========= TICKER =========
                             elif "@ticker" in stream:
                                 info["price"] = float(payload["c"])
@@ -299,6 +312,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
