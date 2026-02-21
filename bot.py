@@ -141,7 +141,6 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ================== SCANNER LOOP ==================
-# ================== SCANNER LOOP ==================
 async def scanner_loop():
     global scanner_running, ALL_SYMBOLS
 
@@ -158,20 +157,28 @@ async def scanner_loop():
         if not ALL_SYMBOLS:
             return
 
-        # ----------------------------
-        # 1️⃣ WEBSOCKET MARKET DATA
-        # ----------------------------
-        async def market_socket():
+        # ==========================================
+        # 1️⃣ MARKET WEBSOCKETS (разбивка на чанки)
+        # ==========================================
+
+        SYMBOLS_PER_SOCKET = 250  # безопасно < 1024 stream
+
+        symbol_chunks = [
+            ALL_SYMBOLS[i:i + SYMBOLS_PER_SOCKET]
+            for i in range(0, len(ALL_SYMBOLS), SYMBOLS_PER_SOCKET)
+        ]
+
+        async def run_market_socket(symbol_list):
 
             url = "wss://fstream.binance.com/ws"
 
             while True:
                 try:
                     async with websockets.connect(url, ping_interval=20) as ws:
-                        print("WS market connected")
+                        print(f"WS market connected ({len(symbol_list)} symbols)")
 
                         params = []
-                        for s in ALL_SYMBOLS:
+                        for s in symbol_list:
                             s = s.lower()
                             params.append(f"{s}@ticker")
                             params.append(f"{s}@markPrice")
@@ -188,10 +195,9 @@ async def scanner_loop():
 
                             await asyncio.sleep(0.2)
 
-                        print("WS market subscribed")
+                        print("WS market subscribed chunk")
 
                         async for message in ws:
-
                             payload = json.loads(message)
 
                             event_type = payload.get("e")
@@ -213,9 +219,10 @@ async def scanner_loop():
                     print("WS MARKET ERROR:", e)
                     await asyncio.sleep(5)
 
-        # ----------------------------
+        # ==========================================
         # 2️⃣ OPEN INTEREST LOOP (REST)
-        # ----------------------------
+        # ==========================================
+
         async def oi_loop():
 
             while True:
@@ -225,7 +232,6 @@ async def scanner_loop():
 
                     for symbol in ALL_SYMBOLS:
 
-                        # --- ИСПРАВЛЕННЫЙ REST ЗАПРОС ---
                         r = await asyncio.to_thread(
                             requests.get,
                             f"{BINANCE}/fapi/v1/openInterest",
@@ -235,7 +241,6 @@ async def scanner_loop():
 
                         data = r.json()
 
-                        # --- защита от ошибки ответа ---
                         if "openInterest" not in data:
                             continue
 
@@ -259,7 +264,6 @@ async def scanner_loop():
 
                             oi_pct = (oi - old_oi) / old_oi * 100
 
-                            # DEBUG
                             print(f"{symbol} OI change: {oi_pct:.3f}%")
 
                             if oi_pct >= cfg["oi_percent"] and cfg["chat_id"]:
@@ -277,8 +281,7 @@ async def scanner_loop():
 
                                 history.clear()
 
-                        # защита от rate limit
-                        await asyncio.sleep(0.05)
+                        await asyncio.sleep(0.05)  # защита от лимита
 
                     await asyncio.sleep(5)
 
@@ -286,8 +289,9 @@ async def scanner_loop():
                     print("OI LOOP ERROR:", e)
                     await asyncio.sleep(5)
 
+        # запуск нескольких market websocket + oi loop
         await asyncio.gather(
-            market_socket(),
+            *[asyncio.create_task(run_market_socket(chunk)) for chunk in symbol_chunks],
             oi_loop()
         )
 
@@ -332,6 +336,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
