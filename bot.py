@@ -15,7 +15,8 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-
+import websockets
+import json
 # ================== CONFIG ==================
 
 print("### THIS IS WHILE TRUE VERSION ###")
@@ -38,14 +39,12 @@ cfg = {
 }
 
 oi_history = {}
+market_data = {}
+
 oi_signals_today = defaultdict(int)
 
 scanner_running = False
 ALL_SYMBOLS = []
-BATCH_SIZE = 100
-MAX_CONCURRENT_REQUESTS = 25
-batch_index = 0
-
 
 # ================== BINANCE ==================
 
@@ -70,32 +69,7 @@ def get_all_usdt_symbols():
         print("exchangeInfo failed:", e)
         return []
 
-def get_open_interest(symbol: str):
-    try:
-        r = requests.get(
-            f"{BINANCE}/fapi/v1/openInterest",
-            params={"symbol": symbol},
-            timeout=5,
-        ).json()
-        return float(r["openInterest"])
-    except Exception:
-        return None
 
-def get_price(symbol: str):
-    try:
-        r = requests.get(
-            f"{BINANCE}/fapi/v1/ticker/price",
-            params={"symbol": symbol},
-            timeout=5,
-        ).json()
-        return float(r["price"])
-    except Exception:
-        return None
-async def fetch_data(symbol, semaphore):
-    async with semaphore:
-        oi = await asyncio.to_thread(get_open_interest, symbol)
-        price = await asyncio.to_thread(get_price, symbol)
-        return symbol, oi, price
 # ================== UI ==================
 
 def keyboard():
@@ -166,115 +140,144 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Введите число")
 
 # ================== SCANNER LOOP ==================
-
 async def scanner_loop():
-    global scanner_running, ALL_SYMBOLS, batch_index
+    global scanner_running, ALL_SYMBOLS
 
     if scanner_running:
         return
 
     scanner_running = True
-    print(">>> OI scanner loop started <<<")
+    print(">>> WS PRO SCANNER STARTED <<<")
 
     try:
-        # Получаем список всех USDT perpetual один раз
         ALL_SYMBOLS = await asyncio.to_thread(get_all_usdt_symbols)
         print("Total USDT perpetual pairs:", len(ALL_SYMBOLS))
 
-        while True:
-            try:
-                if not cfg["chat_id"]:
-                    await asyncio.sleep(1)
-                    continue
+        if not ALL_SYMBOLS:
+            print("No symbols found")
+            return
 
-                if not ALL_SYMBOLS:
+        # на одну пару 3 стрима → делаем запас
+        SYMBOLS_PER_SOCKET = 300
+
+        symbol_chunks = [
+            ALL_SYMBOLS[i:i + SYMBOLS_PER_SOCKET]
+            for i in range(0, len(ALL_SYMBOLS), SYMBOLS_PER_SOCKET)
+        ]
+
+        async def run_socket(symbol_list):
+
+            streams = "/".join(
+                f"{s.lower()}@openInterest/"
+                f"{s.lower()}@ticker/"
+                f"{s.lower()}@markPrice"
+                for s in symbol_list
+            )
+
+            url = f"wss://fstream.binance.com/stream?streams={streams}"
+
+            while True:
+                try:
+                    async with websockets.connect(url, ping_interval=20) as ws:
+                        print(f"WS connected ({len(symbol_list)} symbols)")
+
+                        async for message in ws:
+
+                            data = json.loads(message)
+                            if "data" not in data:
+                                continue
+
+                            stream = data["stream"]
+                            payload = data["data"]
+
+                            symbol = payload.get("s")
+                            if not symbol:
+                                continue
+
+                            info = market_data.setdefault(symbol, {})
+
+                            # ========= OI =========
+                            if "@openinterest" in stream:
+
+                                info["oi"] = float(payload["oi"])
+                                now = datetime.now(UTC_PLUS_3)
+
+                                if not cfg["chat_id"]:
+                                    continue
+
+                                window = timedelta(minutes=cfg["oi_period"])
+                                history = oi_history.setdefault(symbol, [])
+                                history.append((now, info["oi"]))
+
+                                history[:] = [
+                                    (t, o)
+                                    for t, o in history
+                                    if now - t <= window
+                                ]
+
+                                if len(history) >= 2:
+                                    old_oi = history[0][1]
+                                    if old_oi == 0:
+                                        continue
+
+                                    oi_pct = (info["oi"] - old_oi) / old_oi * 100
+
+                                    if oi_pct >= cfg["oi_percent"]:
+
+                                        price = info.get("price", 0)
+                                        volume = info.get("volume", 0)
+                                        funding = info.get("funding", 0)
+
+                                        await send_signal_ws(
+                                            symbol,
+                                            oi_pct,
+                                            price,
+                                            volume,
+                                            funding,
+                                            cfg["oi_period"],
+                                        )
+
+                                        history.clear()
+
+                            # ========= TICKER =========
+                            elif "@ticker" in stream:
+                                info["price"] = float(payload["c"])
+                                info["volume"] = float(payload["q"])
+
+                            # ========= FUNDING =========
+                            elif "@markprice" in stream:
+                                info["funding"] = float(payload["r"])
+
+                except Exception as e:
+                    print("WS ERROR:", e)
+                    print("Reconnecting in 5 seconds...")
                     await asyncio.sleep(5)
-                    continue
 
-                now = datetime.now(UTC_PLUS_3)
-                window = timedelta(minutes=cfg["oi_period"])
+        # запускаем несколько сокетов параллельно
+        tasks = [asyncio.create_task(run_socket(chunk)) for chunk in symbol_chunks]
 
-                # Формируем батч
-                start = batch_index * BATCH_SIZE
-                end = start + BATCH_SIZE
-                batch = ALL_SYMBOLS[start:end]
-
-                if not batch:
-                    batch_index = 0
-                    continue
-
-                # Параллельные OI + price запросы
-                semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
-
-                tasks = [
-                    fetch_data(symbol, semaphore)
-                    for symbol in batch
-                ]
-
-                results = await asyncio.gather(*tasks)
-
-                for symbol, oi, price in results:
-
-                    if oi is None or price is None:
-                        continue
-
-                    history = oi_history.setdefault(symbol, [])
-                    history.append((now, oi, price))
-
-                    # Оставляем только данные в пределах окна
-                    history[:] = [
-                        (t, o, p)
-                        for t, o, p in history
-                        if now - t <= window
-                    ]
-
-                    if len(history) >= 2:
-                        old_oi = history[0][1]
-                        old_price = history[0][2]
-
-                        if old_oi == 0 or old_price == 0:
-                            continue
-
-                        oi_pct = (oi - old_oi) / old_oi * 100
-                        price_pct = (price - old_price) / old_price * 100
-
-                        if oi_pct >= cfg["oi_percent"]:
-                            await send_signal(
-                                symbol,
-                                oi_pct,
-                                price_pct,
-                                cfg["oi_period"],
-                            )
-                            history.clear()
-
-                batch_index += 1
-
-                print(f"[OI] Проверен батч {batch_index}")
-
-                await asyncio.sleep(3)
-
-            except Exception as e:
-                print("SCANNER LOOP ERROR:", e)
-                await asyncio.sleep(5)
+        await asyncio.gather(*tasks)
 
     finally:
         scanner_running = False
 # ================== SIGNAL ==================
-
-async def send_signal(symbol: str, oi_pct: float, price_pct: float, period: int):
+async def send_signal_ws(symbol, oi_pct, price, volume, funding, period):
     today = datetime.now(UTC_PLUS_3).date()
     oi_signals_today[(symbol, today)] += 1
     count = oi_signals_today[(symbol, today)]
 
     link = f"https://www.coinglass.com/tv/Binance_{symbol}"
-    price_sign = "+" if price_pct >= 0 else ""
+
+    funding_sign = "+" if funding >= 0 else ""
 
     msg = (
         f"🪙 <b><a href='{link}'>{symbol}</a></b>\n"
-        f"📊 Рост OI: <b>+{oi_pct:.2f}%</b>\n"
-        f"📈 Цена: <b>{price_sign}{price_pct:.2f}%</b>\n"
+        f"📊 OI: <b>+{oi_pct:.2f}%</b>\n"
+        f"💰 Цена: <b>{price}</b>\n"
+        f"📦 Объём 24h: <b>{volume:,.0f}</b>\n"
+        f"💸 Funding: <b>{funding_sign}{funding:.4%}</b>\n"
         f"⏱ Период: {period} мин\n"
-        f"🔁 <b>Сигнал 24h:</b> {count}"
+        f"🔁 Сигнал 24h: {count}"
     )
 
     await app.bot.send_message(
@@ -296,6 +299,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
