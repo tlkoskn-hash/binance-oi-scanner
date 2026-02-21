@@ -252,27 +252,7 @@ async def scanner_loop():
 
     finally:
         scanner_running = False
-                            # ========= TICKER =========
-                            elif "@ticker" in stream:
-                                info["price"] = float(payload["c"])
-                                info["volume"] = float(payload["q"])
 
-                            # ========= FUNDING =========
-                            elif "@markprice" in stream:
-                                info["funding"] = float(payload["r"])
-
-                except Exception as e:
-                    print("WS ERROR:", e)
-                    print("Reconnecting in 5 seconds...")
-                    await asyncio.sleep(5)
-
-        # запускаем несколько сокетов параллельно
-        tasks = [asyncio.create_task(run_socket(chunk)) for chunk in symbol_chunks]
-
-        await asyncio.gather(*tasks)
-
-    finally:
-        scanner_running = False
 # ================== SIGNAL ==================
 async def send_signal_ws(symbol, oi_pct, price, volume, funding, period):
     today = datetime.now(UTC_PLUS_3).date()
@@ -312,6 +292,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
