@@ -198,6 +198,7 @@ async def scanner_loop():
                         print("Subscribed chunk")
 
                         async for message in ws:
+                            print("RAW MESSAGE:", message)
                             data = json.loads(message)
 
                             # Binance иногда шлёт ответы без data
@@ -315,6 +316,7 @@ app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
