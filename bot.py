@@ -193,7 +193,7 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================== SCANNER LOOP ==================
 async def scanner_loop():
-    global scanner_running, ALL_SYMBOLS, price_history
+    global scanner_running, ALL_SYMBOLS, price_history, oi_history
 
     if scanner_running:
         return
@@ -202,8 +202,11 @@ async def scanner_loop():
     print(">>> OI scanner loop started <<<")
 
     try:
+        # === Первичная загрузка TOP-200 ===
         ALL_SYMBOLS = await asyncio.to_thread(get_top_200_symbols)
-        print("Total USDT perpetual pairs:", len(ALL_SYMBOLS))
+        print("Initial TOP-200 loaded:", len(ALL_SYMBOLS))
+
+        last_symbols_update = datetime.now(UTC_PLUS_3)
 
         while True:
             try:
@@ -211,17 +214,38 @@ async def scanner_loop():
                     await asyncio.sleep(1)
                     continue
 
-                cycle_start = time.time()
-
                 now = datetime.now(UTC_PLUS_3)
-                window = timedelta(minutes=cfg["oi_period"])
 
+                # === Обновление TOP-200 каждые 12 часов ===
+                if now - last_symbols_update > timedelta(hours=12):
+
+                    print("Updating TOP-200 symbols...")
+
+                    new_symbols = await asyncio.to_thread(get_top_200_symbols)
+
+                    removed = set(ALL_SYMBOLS) - set(new_symbols)
+                    added = set(new_symbols) - set(ALL_SYMBOLS)
+
+                    ALL_SYMBOLS = new_symbols
+
+                    # --- очищаем историю удалённых монет ---
+                    for s in removed:
+                        oi_history.pop(s, None)
+                        price_history.pop(s, None)
+
+                    print(f"TOP-200 updated. Total: {len(ALL_SYMBOLS)}")
+                    print(f"Added: {len(added)}, Removed: {len(removed)}")
+
+                    last_symbols_update = now
+
+                cycle_start = time.time()
+                window = timedelta(minutes=cfg["oi_period"])
                 triggered = []
 
                 # === 1. Получаем ВСЕ цены одним запросом ===
                 prices = await get_all_prices()
 
-                # === 2. Проверяем OI и считаем изменение цены ===
+                # === 2. Проверяем OI и цену ===
                 for symbol in ALL_SYMBOLS:
 
                     oi = await get_open_interest(symbol)
@@ -320,6 +344,7 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
