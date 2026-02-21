@@ -1,3 +1,4 @@
+import asyncio
 import requests
 import os
 from datetime import datetime, timedelta, timezone
@@ -272,4 +273,5 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
