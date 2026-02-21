@@ -1,4 +1,5 @@
 import aiohttp
+import time
 import asyncio
 import requests
 import os
@@ -39,6 +40,7 @@ cfg = {
 }
 
 oi_history = {}
+price_history = {}
 oi_signals_today = defaultdict(int)
 session = None
 scanner_running = False
@@ -190,10 +192,8 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Введите число")
 
 # ================== SCANNER LOOP ==================
-import time
-
 async def scanner_loop():
-    global scanner_running, ALL_SYMBOLS
+    global scanner_running, ALL_SYMBOLS, price_history
 
     if scanner_running:
         return
@@ -218,47 +218,58 @@ async def scanner_loop():
 
                 triggered = []
 
-                # === 1. Последовательно проверяем OI ===
+                # === 1. Получаем ВСЕ цены одним запросом ===
+                prices = await get_all_prices()
+
+                # === 2. Проверяем OI и считаем изменение цены ===
                 for symbol in ALL_SYMBOLS:
 
                     oi = await get_open_interest(symbol)
-
                     if oi is None:
                         continue
 
-                    history = oi_history.setdefault(symbol, [])
-                    history.append((now, oi))
+                    current_price = prices.get(symbol)
+                    if not current_price:
+                        continue
 
-                    history[:] = [
-                        (t, o)
-                        for t, o in history
+                    # ----- OI HISTORY -----
+                    oi_hist = oi_history.setdefault(symbol, [])
+                    oi_hist.append((now, oi))
+                    oi_hist[:] = [
+                        (t, o) for t, o in oi_hist
                         if now - t <= window
                     ]
 
-                    if len(history) >= 2:
-                        old_oi = history[0][1]
+                    # ----- PRICE HISTORY -----
+                    price_hist = price_history.setdefault(symbol, [])
+                    price_hist.append((now, current_price))
+                    price_hist[:] = [
+                        (t, p) for t, p in price_hist
+                        if now - t <= window
+                    ]
 
-                        if old_oi == 0:
+                    if len(oi_hist) >= 2 and len(price_hist) >= 2:
+
+                        old_oi = oi_hist[0][1]
+                        old_price = price_hist[0][1]
+
+                        if old_oi == 0 or old_price == 0:
                             continue
 
                         oi_pct = (oi - old_oi) / old_oi * 100
+                        price_pct = (current_price - old_price) / old_price * 100
 
                         if oi_pct >= cfg["oi_percent"]:
-                            triggered.append((symbol, oi_pct))
-                            history.clear()
-
-                # === 2. Получаем ВСЕ цены ОДИН раз ===
-                prices = {}
-                if triggered:
-                    prices = await get_all_prices()
+                            triggered.append((symbol, oi_pct, price_pct))
+                            oi_hist.clear()
+                            price_hist.clear()
 
                 # === 3. Отправляем сигналы ===
-                for symbol, oi_pct in triggered:
-                    price = prices.get(symbol, 0)
+                for symbol, oi_pct, price_pct in triggered:
                     await send_signal(
                         symbol,
                         oi_pct,
-                        0,  # price_pct пока убрали
+                        price_pct,
                         cfg["oi_period"],
                     )
 
@@ -309,6 +320,7 @@ app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
 print(">>> BINANCE OI SCREENER RUNNING <<<")
 app.run_polling()
+
 
 
 
